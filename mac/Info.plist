@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>              <string>Dek</string>
+  <key>CFBundleDisplayName</key>       <string>Dek</string>
+  <key>CFBundleIdentifier</key>        <string>dev.juanse.dek</string>
+  <key>CFBundleVersion</key>           <string>0.1.0</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleExecutable</key>        <string>Dek</string>
+  <key>CFBundlePackageType</key>       <string>APPL</string>
+  <key>CFBundleIconFile</key>          <string>Dek</string>
+  <key>LSMinimumSystemVersion</key>    <string>12.0</string>
+  <key>NSHighResolutionCapable</key>   <true/>
+  <key>NSPrincipalClass</key>          <string>NSApplication</string>
+  <key>NSHumanReadableCopyright</key>  <string>Made for the stage.</string>
+  <key>LSAppNapIsDisabled</key>        <true/>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>      <string>HTML Deck</string>
+      <key>CFBundleTypeRole</key>      <string>Viewer</string>
+      <key>LSHandlerRank</key>         <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.html</string>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>
