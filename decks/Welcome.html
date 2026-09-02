@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Welcome to Dek</title>
+  <meta name="description" content="A tour of what a Dek deck can do: fragments, auto-animate, charts, CSS 3D, components.">
+  <meta name="dek-transition" content="fade">
+  <style id="dek-theme">
+    :root {
+      --paper: oklch(0.975 0.005 95);
+      --paper-2: oklch(0.945 0.007 95);
+      --ink: oklch(0.20 0.012 260);
+      --ink-2: oklch(0.45 0.012 260);
+      --ink-3: oklch(0.62 0.010 260);
+      --accent: oklch(0.50 0.20 262);
+      --accent-soft: oklch(0.50 0.20 262 / 0.10);
+      --amber: oklch(0.76 0.14 75);
+      --rule: oklch(0.87 0.008 95);
+      --display: ui-serif, "New York", "Iowan Old Style", Charter, Georgia, serif;
+      --text: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+      --mono: ui-monospace, "SF Mono", Menlo, monospace;
+      --dek-c1: var(--accent);
+      --dek-c2: var(--amber);
+      --dek-c3: oklch(0.70 0.04 260);
+      --dek-highlight: var(--accent);
+      --dek-transition-ms: 520ms;
+    }
+  </style>
+  <style>
+    section {
+      background: var(--paper);
+      color: var(--ink);
+      font-family: var(--text);
+      padding: 120px 140px;
+    }
+    section.inverted { background: oklch(0.19 0.012 260); color: var(--paper); --rule: oklch(0.34 0.012 260); --ink-2: oklch(0.74 0.010 260); --ink-3: oklch(0.58 0.010 260); }
+
+    h1, h2 { font-family: var(--display); font-weight: 600; letter-spacing: -0.03em; }
+    h1 { font-size: 5.4rem; line-height: 0.96; max-width: 20ch; margin: 0; }
+    h2 { font-size: 3.2rem; line-height: 1.02; max-width: 22ch; margin: 0 0 0.6em; }
+    h3 { font-size: 1.15rem; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 0.4em; }
+    p, li { font-size: 1.15rem; line-height: 1.42; max-width: 42ch; }
+    p { margin: 0 0 0.7em; }
+    .lead { font-size: 1.5rem; line-height: 1.3; max-width: 34ch; color: var(--ink-2); }
+    .kicker { font: 600 0.72rem/1 var(--mono); letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin: 0 0 1.6rem; }
+    .muted { color: var(--ink-2); }
+    .small { font-size: 0.85rem; }
+    .mono { font-family: var(--mono); }
+    .rule { height: 3px; background: var(--accent); width: 320px; margin: 1.4rem 0 1.8rem; }
+
+    .footer { position: absolute; left: 140px; right: 140px; bottom: 72px; display: flex; justify-content: space-between; align-items: baseline; font: 500 0.7rem var(--mono); color: var(--ink-3); letter-spacing: 0.02em; }
+    .footer kbd { font: inherit; padding: 0.1em 0.45em; border: 1px solid var(--rule); border-radius: 6px; margin-right: 0.15em; }
+
+    /* cover */
+    .cover { display: flex; flex-direction: column; justify-content: flex-end; }
+    .cover h1 { font-size: 7.6rem; }
+    .cover::before {
+      content: ""; position: absolute; right: -180px; top: -220px; width: 900px; height: 900px; border-radius: 50%;
+      background: radial-gradient(closest-side, oklch(0.50 0.20 262 / 0.14), oklch(0.50 0.20 262 / 0));
+    }
+
+    /* auto-animate: the title travels */
+    .corner-title h1 { font-size: 2.2rem; color: var(--ink-2); }
+    .anatomy { display: grid; grid-template-columns: 1fr 1.1fr; gap: 96px; align-items: start; margin-top: 1.6rem; }
+    .anatomy .lead { margin: 0 0 1.2rem; }
+    .anatomy p { max-width: 36ch; }
+    .anatomy pre {
+      margin: 0; padding: 40px 44px; border-radius: 16px;
+      background: oklch(0.19 0.012 260); color: oklch(0.92 0.006 95);
+      font: 500 0.78rem/1.6 var(--mono); overflow: hidden; white-space: pre;
+    }
+    .anatomy pre .c { color: oklch(0.62 0.010 260); }
+    .anatomy pre .t { color: oklch(0.78 0.12 255); }
+    .anatomy pre .a { color: var(--amber); }
+    .list { list-style: none; padding: 0; margin: 1.2rem 0 0; counter-reset: n; }
+    .list li { counter-increment: n; display: grid; grid-template-columns: 4rem 1fr; gap: 1rem; padding: 0.55rem 0; border-top: 1px solid var(--rule); max-width: 50ch; }
+    .list li::before { content: counter(n, decimal-leading-zero); font: 500 0.8rem/1.9 var(--mono); color: var(--accent); }
+    .list li:last-child { border-bottom: 1px solid var(--rule); }
+
+    /* motion words */
+    .words { display: flex; flex-direction: column; gap: 0.06em; font-family: var(--display); font-size: 5.4rem; line-height: 1.04; letter-spacing: -0.035em; font-weight: 600; margin-top: 0.4rem; }
+    .words em { font-style: italic; color: oklch(0.80 0.11 255); padding-bottom: 0.08em; }
+
+    /* charts */
+    .chart-wrap { display: grid; grid-template-columns: 1fr 520px; gap: 80px; align-items: center; height: 100%; }
+    .chart-wrap .dek-chart { width: 100%; height: 620px; color: var(--ink-2); }
+    .stats { display: grid; gap: 40px; }
+    .stat .value { font: 600 4rem/1 var(--display); letter-spacing: -0.03em; color: var(--ink); }
+    .stat .label { font-size: 0.95rem; color: var(--ink-2); margin-top: 0.3em; max-width: 24ch; }
+    .caption { font: 500 0.72rem/1.4 var(--mono); color: var(--ink-3); margin-top: 0.8rem; }
+
+    /* 3D */
+    .scene-wrap { display: grid; grid-template-columns: 1fr 1fr; align-items: center; height: 100%; }
+    .dek-scene { display: flex; align-items: center; justify-content: center; height: 100%; }
+    .dek-cube { --size: 380px; }
+    .dek-cube > * { font: 600 1.6rem var(--display); letter-spacing: -0.02em; background: oklch(0.975 0.005 95 / 0.55); border: 1px solid oklch(0.20 0.012 260 / 0.25); color: var(--ink); }
+    .dek-cube > .front { background: var(--accent); color: var(--paper); border-color: transparent; }
+    .dek-cube > .top { background: var(--amber); color: var(--ink); border-color: transparent; }
+    .card { padding: 48px 52px; border-radius: 16px; background: var(--paper-2); border: 1px solid var(--rule); box-shadow: 0 30px 70px oklch(0.20 0.012 260 / 0.12); max-width: 640px; }
+    .card h3 { font-size: 1.4rem; margin-bottom: 0.6em; }
+    .card p { font-size: 1rem; color: var(--ink-2); margin: 0; }
+
+    /* presets */
+    .presets { display: grid; grid-template-columns: max-content 1fr max-content 1fr; gap: 0.55rem 1.6rem; margin-top: 1.4rem; align-items: baseline; }
+    .presets .k { font: 500 1.3rem/1.5 var(--mono); color: var(--accent); }
+    .presets .v { font-size: 1.1rem; color: var(--ink-2); padding-right: 2rem; }
+
+    /* tools */
+    .tools { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 64px; margin-top: 1.5rem; }
+    .tools h3 { font-size: 1rem; font-weight: 600; color: var(--ink); padding-bottom: 0.7rem; border-bottom: 1px solid var(--rule); margin-bottom: 0.9rem; }
+    .tools ul { list-style: none; padding: 0; margin: 0; }
+    .tools li { font: 500 0.85rem/1.9 var(--mono); color: var(--ink-2); max-width: none; white-space: nowrap; }
+    .tools li b { font-weight: 500; color: var(--ink); }
+
+    .end { display: flex; flex-direction: column; justify-content: center; }
+    .end h1 { font-size: 4.6rem; }
+    .end .prompt { display: inline-block; margin-top: 2rem; padding: 1.1rem 1.4rem; border-radius: 16px; background: var(--paper-2); border: 1px solid var(--rule); font: 500 1.05rem/1.5 var(--mono); color: var(--ink); max-width: 46ch; }
+  </style>
+</head>
+<body>
+
+<template data-dek-component="stat" data-description="Big serif number with a short label">
+  <div class="stat">
+    <div class="value">{{value}}</div>
+    <div class="label">{{label}}</div>
+  </div>
+</template>
+
+<section id="s-cover" class="cover" data-auto-animate>
+  <p class="kicker" data-animate="fade-up">Dek · a stage for HTML decks</p>
+  <h1 data-id="hero" data-animate="fade-up" data-delay="90">Decks are just HTML.</h1>
+  <p class="lead" data-animate="fade-up" data-delay="200" style="margin-top: 1.4rem">One file, one <span class="mono">&lt;section&gt;</span> per slide. Your agent writes it. Dek presents it.</p>
+  <div class="footer" data-animate="fade" data-delay="600">
+    <span><kbd>→</kbd> next &nbsp; <kbd>o</kbd> light table &nbsp; <kbd>⌘⏎</kbd> present &nbsp; <kbd>?</kbd> shortcuts</span>
+  </div>
+  <aside class="notes">
+    <p>This is a speaker note. It only shows in the presenter view (press <b>s</b> or ⌥⌘P).</p>
+    <p>Press → to advance. The title on this slide travels to the corner of the next one: that is auto-animate.</p>
+  </aside>
+</section>
+
+<section id="s-anatomy" class="corner-title" data-auto-animate>
+  <h1 data-id="hero">Decks are just HTML.</h1>
+  <div class="anatomy">
+    <div>
+      <p class="lead">Everything you see is a <span class="mono">&lt;section&gt;</span> in one <span class="mono">.html</span> file, laid out on a 1920 × 1080 canvas that Dek scales to any screen.</p>
+      <p class="fragment fade-up">The <b class="mono">&lt;head&gt;</b> carries the theme: fonts, colors and spacing as CSS variables.</p>
+      <p class="fragment fade-up">An <b class="mono">&lt;aside class="notes"&gt;</b> inside a slide is what you read, not what they see.</p>
+      <p class="fragment fade-up">Dek watches the file. When your agent edits it, the stage reloads in place and stays on this slide.</p>
+    </div>
+    <pre data-animate="fade-up" data-delay="200"><span class="c">&lt;!-- this very slide, trimmed --&gt;</span>
+<span class="t">&lt;section</span> <span class="a">id</span>="s-anatomy" <span class="a">data-auto-animate</span><span class="t">&gt;</span>
+  <span class="t">&lt;h1</span> <span class="a">data-id</span>="hero"<span class="t">&gt;</span>Decks are just HTML.<span class="t">&lt;/h1&gt;</span>
+  <span class="t">&lt;p</span> <span class="a">class</span>="lead"<span class="t">&gt;</span>Everything you see is…<span class="t">&lt;/p&gt;</span>
+  <span class="t">&lt;p</span> <span class="a">class</span>="fragment fade-up"<span class="t">&gt;</span>The head carries…<span class="t">&lt;/p&gt;</span>
+  <span class="t">&lt;aside</span> <span class="a">class</span>="notes"<span class="t">&gt;</span>Three fragments here.<span class="t">&lt;/aside&gt;</span>
+<span class="t">&lt;/section&gt;</span></pre>
+  </div>
+  <aside class="notes">Three fragments here. Each → reveals one paragraph. Point out that the file stays readable and diffable, and that the code on the right is the real markup.</aside>
+</section>
+
+<section id="s-fragments">
+  <h2>Reveal things in the order you say them.</h2>
+  <p class="lead">Add <span class="mono">class="fragment"</span> to anything. A second class decides how it arrives.</p>
+  <ul class="list" style="margin-top: 1.4rem">
+    <li class="fragment fade-up"><span>Arrives from below with <b class="mono">fade-up</b></span></li>
+    <li class="fragment fade-left"><span>Slides in from the right with <b class="mono">fade-left</b></span></li>
+    <li class="fragment blur"><span>Comes into focus with <b class="mono">blur</b></span></li>
+    <li class="fragment zoom"><span>Grows into place with <b class="mono">zoom</b>, then <span class="fragment highlight">this phrase lights up</span></span></li>
+  </ul>
+  <aside class="notes">Five steps on this slide (the highlight is the fifth). Backspace or ← walks them back.</aside>
+</section>
+
+<section id="s-motion" class="inverted" data-transition="rise">
+  <div class="words">
+    <span data-animate="rise" data-delay="120">Motion</span>
+    <span data-animate="blur-in" data-delay="420">that means</span>
+    <span data-animate="wipe-right" data-delay="760"><em>something.</em></span>
+  </div>
+  <div class="rule" data-animate="grow-x" data-delay="1200" style="width: 480px; margin-top: 1.8rem; background: oklch(0.80 0.11 255)"></div>
+  <p class="lead" data-animate="fade-up" data-delay="1400" style="color: var(--ink-2)">Thirteen enter presets with <span class="mono">data-delay</span> and <span class="mono">data-stagger</span>. Slide transitions: fade, slide, rise, zoom, flip. All ease out, none bounce.</p>
+  <aside class="notes">This slide arrived with the <b>rise</b> transition (set per slide with data-transition). The words use three different enter presets and staggered delays.</aside>
+</section>
+
+<section id="s-chart">
+  <p class="kicker">Charts</p>
+  <h2>A chart is a JSON block.</h2>
+  <div class="chart-wrap" style="height: 640px">
+    <div>
+      <figure class="dek-chart" data-chart='{"type":"bar","labels":["Mon","Tue","Wed","Thu","Fri"],"series":[{"name":"Slides the agent wrote","data":[4,9,7,12,6]},{"name":"Slides you touched by hand","data":[1,2,1,3,1]}],"options":{"legend":true,"ticks":4,"radius":8}}'></figure>
+      <p class="caption">Sample data. Bars grow when the slide appears; colors come from the deck's theme variables.</p>
+    </div>
+    <div class="stats">
+      <div class="stat" data-animate="fade-up" data-delay="600">
+        <div class="value"><span data-count-to="5" data-duration="1200">0</span> types</div>
+        <div class="label">bar, line, area, donut and pie, from <span class="mono">data-chart</span></div>
+      </div>
+      <div class="stat" data-animate="fade-up" data-delay="800">
+        <div class="value"><span data-count-to="0" data-decimals="0">0</span> libraries</div>
+        <div class="label">the runtime renders SVG; lines draw and arcs sweep on enter</div>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">The chart is a &lt;figure class="dek-chart"&gt; with a JSON attribute. Colors come from --dek-c1 to --dek-c6, which this theme maps to its accent and amber. The numbers are sample data.</aside>
+</section>
+
+<section id="s-donut" data-transition="zoom">
+  <h2>Define once, reuse everywhere.</h2>
+  <div class="chart-wrap" style="height: 620px; grid-template-columns: 720px 1fr">
+    <div>
+      <figure class="dek-chart" style="height: 520px" data-chart='{"type":"donut","labels":["Agent-written","Edited by you","From the template"],"series":[{"data":[68,22,10]}],"options":{"center":"68%","centerSub":"of a sample deck","thickness":74}}'></figure>
+      <p class="caption">Sample numbers.</p>
+    </div>
+    <div class="stats">
+      <div data-dek-use="stat" data-vars='{"value":"1 template","label":"one stat component, defined once in the file"}'></div>
+      <div data-dek-use="stat" data-vars='{"value":"2 instances","label":"placed with data-dek-use. Change the template and both update."}'></div>
+    </div>
+  </div>
+  <aside class="notes">The two stats on the right are live instances of one component. Agents can list, add and place components over MCP.</aside>
+</section>
+
+<section id="s-3d" class="dek-full" data-transition="slide">
+  <div class="scene-wrap" style="padding: 120px 140px">
+    <div>
+      <p class="kicker">CSS 3D</p>
+      <h2>Depth without a framework.</h2>
+      <div class="card dek-tilt" data-tilt="8" data-animate="fade-up" data-delay="300">
+        <h3>Move the mouse.</h3>
+        <p>This card tilts toward the pointer with <span class="mono">class="dek-tilt"</span>. The cube spins with <span class="mono">data-orbit</span>. Real WebGL works too: drop in Three.js and a <span class="mono">&lt;canvas&gt;</span>.</p>
+      </div>
+    </div>
+    <div class="dek-scene">
+      <div class="dek-cube" data-orbit style="--orbit: 18s; --tilt: -22deg">
+        <div class="front">HTML</div>
+        <div class="back">CSS</div>
+        <div class="right">Slides</div>
+        <div class="left">Notes</div>
+        <div class="top">Dek</div>
+        <div class="bottom">MCP</div>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">Full-bleed slide (dek-full) with its own padding. The cube is six divs. Ask the agent for a Three.js scene if you need real geometry.</aside>
+</section>
+
+<section id="s-presets" data-transition="flip">
+  <h2>This slide flipped in.</h2>
+  <p class="lead">A deck sets its default transition in <span class="mono">&lt;meta name="dek-transition"&gt;</span>; any slide overrides it with <span class="mono">data-transition</span>. Two consecutive slides with <span class="mono">data-auto-animate</span> morph their shared <span class="mono">data-id</span> elements instead.</p>
+  <div class="presets">
+    <span class="k">fade</span><span class="v">the default, quiet</span>
+    <span class="k">slide</span><span class="v">horizontal push</span>
+    <span class="k">rise</span><span class="v">lifts in from below</span>
+    <span class="k">zoom</span><span class="v">a subtle scale</span>
+    <span class="k">flip</span><span class="v">rotates on the Y axis</span>
+    <span class="k">none</span><span class="v">instant</span>
+  </div>
+  <aside class="notes">Speed lives in Settings (fast, normal, slow) or per deck in --dek-transition-ms.</aside>
+</section>
+
+<section id="s-agents">
+  <p class="kicker">Agents · MCP</p>
+  <h2>Your agent is the editor.</h2>
+  <p class="lead">Connect Claude Code from Settings (⌘,). It reads, writes and <em>looks at</em> the deck through these tools. Every change lands in the file and is undoable with ⌘Z.</p>
+  <div class="tools">
+    <div data-animate="fade-up" data-delay="100">
+      <h3>Read</h3>
+      <ul><li><b>get_deck</b></li><li><b>get_slide</b></li><li><b>get_elements</b></li><li><b>get_theme</b></li><li><b>list_components</b></li><li><b>snapshot_slide</b> returns a PNG</li></ul>
+    </div>
+    <div data-animate="fade-up" data-delay="220">
+      <h3>Write</h3>
+      <ul><li><b>add_slide</b></li><li><b>update_slide</b></li><li><b>move_slide</b></li><li><b>update_element</b></li><li><b>set_theme</b></li><li><b>use_component</b></li></ul>
+    </div>
+    <div data-animate="fade-up" data-delay="340">
+      <h3>Drive</h3>
+      <ul><li><b>goto</b></li><li><b>navigate</b></li><li><b>present</b></li><li><b>overview</b></li><li><b>get_state</b></li><li><b>get_format_guide</b></li></ul>
+    </div>
+  </div>
+  <aside class="notes">Point out snapshot_slide: the agent sees exactly what the audience sees, so it can iterate on visual quality without you describing it.</aside>
+</section>
+
+<section id="s-end" class="end">
+  <h1>Ask for a deck.</h1>
+  <p class="lead" style="margin-top: 1rem">Open Settings, copy the Claude Code command, then say:</p>
+  <p class="prompt">“Turn the deck open in Dek into a 10-slide pitch for my project. Keep the typography and check every slide with a snapshot.”</p>
+  <div class="footer">
+    <span>docs/DECK_FORMAT.md covers everything on this tour</span>
+    <span><kbd>esc</kbd> leaves presenting</span>
+  </div>
+  <aside class="notes">End. Suggest they duplicate this file as a starting point, or create a blank deck with ⌘N.</aside>
+</section>
+
+</body>
+</html>

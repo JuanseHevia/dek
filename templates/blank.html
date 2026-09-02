@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Untitled deck</title>
+  <meta name="dek-transition" content="fade">
+  <style id="dek-theme">
+    :root {
+      --bg: oklch(0.985 0.004 90);
+      --ink: oklch(0.20 0.012 260);
+      --ink-2: oklch(0.48 0.012 260);
+      --accent: oklch(0.55 0.14 250);
+      --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", system-ui, sans-serif;
+      --dek-c1: var(--accent);
+    }
+  </style>
+  <style>
+    section { background: var(--bg); color: var(--ink); font-family: var(--font); }
+    h1 { font-size: 4rem; line-height: 1; letter-spacing: -0.035em; max-width: 26ch; }
+    h2 { font-size: 2.4rem; letter-spacing: -0.03em; max-width: 30ch; }
+    p, li { font-size: 1.1rem; line-height: 1.4; max-width: 44ch; }
+    .kicker { font-size: 0.8rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); font-weight: 600; margin-bottom: 1.2rem; }
+    .muted { color: var(--ink-2); }
+    .cover { justify-content: flex-end; padding-bottom: 160px; }
+  </style>
+</head>
+<body>
+
+<section id="s-cover" class="cover dek-center" style="align-items: flex-start; text-align: left;">
+  <p class="kicker" data-animate="fade-up">Deck</p>
+  <h1 data-animate="fade-up" data-delay="80">Untitled deck</h1>
+  <p class="muted" data-animate="fade-up" data-delay="160">A subtitle, a date, or who this is for.</p>
+  <aside class="notes">Say hello. Set expectations for the next ten minutes.</aside>
+</section>
+
+<section id="s-one">
+  <p class="kicker">One idea</p>
+  <h2>Make the point in the headline.</h2>
+  <ul>
+    <li class="fragment fade-up">Support it with three things at most.</li>
+    <li class="fragment fade-up">Reveal them one at a time when order matters.</li>
+    <li class="fragment fade-up">Leave room to breathe.</li>
+  </ul>
+  <aside class="notes">Walk through the three points. Pause after the second.</aside>
+</section>
+
+<section id="s-end" class="dek-center">
+  <h1>Thank you.</h1>
+  <p class="muted">Questions welcome.</p>
+</section>
+
+</body>
+</html>
