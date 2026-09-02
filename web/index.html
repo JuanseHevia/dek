@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dek</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app" class="app">
+
+    <aside id="nav" class="nav" aria-label="Slides">
+      <div class="nav-head">
+        <span class="nav-title">Slides</span>
+        <span id="navcount" class="nav-count"></span>
+      </div>
+      <div id="thumbs" class="thumbs" role="listbox" aria-label="Slides"></div>
+      <div class="nav-foot">
+        <button id="addslide" class="navbtn" title="New slide after the current one (⇧⌘N)">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M6 1.5v9M1.5 6h9"/></svg>
+          Slide
+        </button>
+        <span class="nav-spacer"></span>
+        <button id="settingsbtn" class="iconbtn" title="Settings (⌘,)" aria-label="Settings">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="7.5" cy="7.5" r="2.2"/>
+            <path d="M7.5 1.6v1.7M7.5 11.7v1.7M1.6 7.5h1.7M11.7 7.5h1.7M3.3 3.3l1.2 1.2M10.5 10.5l1.2 1.2M11.7 3.3l-1.2 1.2M4.5 10.5l-1.2 1.2"/>
+          </svg>
+        </button>
+      </div>
+    </aside>
+
+    <main id="stagewrap" class="stagewrap">
+      <header id="pill" class="pill" role="toolbar" aria-label="Deck">
+        <button id="navtoggle" class="pillbtn iconbtn" title="Slides (⌘\)" aria-label="Toggle slide navigator">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><rect x="1.5" y="2.5" width="11" height="9" rx="1.5"/><path d="M5.5 2.5v9"/></svg>
+        </button>
+        <span id="deckname" class="deckname">Dek</span>
+        <span id="savestate" class="savestate" data-state="idle" aria-live="polite"></span>
+        <span class="pill-spacer"></span>
+        <button id="counter" class="pillbtn counter" title="Go to slide (⌘P)">– / –</button>
+        <button id="agentbtn" class="pillbtn agentbtn" title="Agent activity (⌘J)"><span class="dot"></span><span class="agentlabel">Agent</span></button>
+        <button id="editbtn" class="pillbtn" title="Edit slide elements (⌘E)">Edit</button>
+        <button id="presentbtn" class="pillbtn primary" title="Present (⌘⏎)">Present</button>
+      </header>
+
+      <div id="stage" class="stage">
+        <iframe id="frame" class="frame" title="Slide" hidden></iframe>
+        <div id="blackout" class="blackout" hidden></div>
+        <div id="gotohud" class="gotohud" hidden aria-live="polite"></div>
+        <div id="stagehint" class="stagehint" hidden></div>
+        <div id="insertbar" class="insertbar" role="toolbar" aria-label="Insert" hidden>
+          <button data-insert="heading" title="Insert a heading (⌥⌘H)"><span class="ins-glyph">H</span>Heading</button>
+          <button data-insert="text" title="Insert a text box (⌥⌘T)"><span class="ins-glyph">T</span>Text</button>
+          <button data-insert="image" title="Insert an image (⌥⌘I)"><span class="ins-glyph">▣</span>Image</button>
+          <span class="ins-hint">Click to select · drag to move · ⏎ or double-click to edit text · ⌫ deletes</span>
+        </div>
+      </div>
+      <div id="eltools" class="eltools" role="toolbar" aria-label="Element" hidden></div>
+
+      <div id="empty" class="empty">
+        <p class="empty-mark">dek</p>
+        <p class="empty-hint">Open an HTML deck <kbd>⌘O</kbd> · New deck <kbd>⌘N</kbd></p>
+        <p class="empty-hint faint">or drop an .html file anywhere on this window</p>
+        <ul id="recent" class="recent"></ul>
+        <button id="samplebtn" class="linkbtn">Open the Welcome deck</button>
+        <p class="empty-agent">Agents write decks over MCP: <button id="emptyagentbtn" class="linkbtn inline">connect Claude Code</button></p>
+      </div>
+
+      <div id="overview" class="overview" hidden aria-label="Light table">
+        <div id="ovgrid" class="ovgrid" role="listbox"></div>
+      </div>
+
+      <section id="settings" class="settings" hidden aria-label="Settings">
+        <div class="settings-inner">
+          <div class="settings-head">
+            <h1>Settings</h1>
+            <button id="settingsclose" class="setbtn" title="Close (Esc)">Done</button>
+          </div>
+
+          <div class="set-group">
+            <h2>Appearance</h2>
+            <div class="set-row">
+              <span class="set-label">Appearance</span>
+              <div class="seg" id="themeseg" role="radiogroup" aria-label="Appearance">
+                <button data-theme-opt="system" role="radio">Auto</button>
+                <button data-theme-opt="light" role="radio">Light</button>
+                <button data-theme-opt="dark" role="radio">Dark</button>
+              </div>
+            </div>
+            <p class="set-note">Dark keeps the stage neutral so slide colors read as they will on the projector.</p>
+            <div class="set-row">
+              <span class="set-label">Thumbnails</span>
+              <div class="seg" id="thumbseg" role="radiogroup" aria-label="Thumbnail size">
+                <button data-thumb="s" role="radio">Small</button>
+                <button data-thumb="m" role="radio">Medium</button>
+                <button data-thumb="l" role="radio">Large</button>
+              </div>
+            </div>
+            <div class="set-row">
+              <span class="set-label">Slide numbers</span>
+              <div class="seg" id="numseg" role="radiogroup" aria-label="Slide numbers on the slide">
+                <button data-num="off" role="radio">Off</button>
+                <button data-num="plain" role="radio">4</button>
+                <button data-num="of" role="radio">4 / 18</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="set-group">
+            <h2>Presenting</h2>
+            <div class="set-row">
+              <span class="set-label">Transition</span>
+              <div class="seg" id="transseg" role="radiogroup" aria-label="Default transition">
+                <button data-trans="fade" role="radio">Fade</button>
+                <button data-trans="slide" role="radio">Slide</button>
+                <button data-trans="rise" role="radio">Rise</button>
+                <button data-trans="zoom" role="radio">Zoom</button>
+                <button data-trans="flip" role="radio">Flip</button>
+                <button data-trans="none" role="radio">None</button>
+              </div>
+            </div>
+            <p class="set-note">A deck can set its own default with <code>&lt;meta name="dek-transition"&gt;</code>, and any slide can override it with <code>data-transition</code>.</p>
+            <div class="set-row">
+              <span class="set-label">Speed</span>
+              <div class="seg" id="speedseg" role="radiogroup" aria-label="Transition speed">
+                <button data-speed="fast" role="radio">Fast</button>
+                <button data-speed="normal" role="radio">Normal</button>
+                <button data-speed="slow" role="radio">Slow</button>
+              </div>
+            </div>
+            <div class="set-row">
+              <span class="set-label">Click advances</span>
+              <div class="seg" id="clickseg" role="radiogroup" aria-label="Click to advance while presenting">
+                <button data-click="on" role="radio">On</button>
+                <button data-click="off" role="radio">Off</button>
+              </div>
+            </div>
+            <div class="set-row">
+              <span class="set-label">Presenter timer</span>
+              <div class="seg" id="timerseg" role="radiogroup" aria-label="Presenter timer">
+                <button data-timer="0" role="radio">Elapsed</button>
+                <button data-timer="10" role="radio">10 min</button>
+                <button data-timer="20" role="radio">20 min</button>
+                <button data-timer="30" role="radio">30 min</button>
+                <button data-timer="45" role="radio">45 min</button>
+              </div>
+            </div>
+            <div class="set-row">
+              <span class="set-label">Notes size</span>
+              <div class="seg">
+                <button id="notesdown" aria-label="Smaller notes">−</button>
+                <button id="notesreset" aria-label="Reset notes size">A</button>
+                <button id="notesup" aria-label="Larger notes">+</button>
+              </div>
+              <span id="notesval" class="set-val"></span>
+            </div>
+          </div>
+
+          <div class="set-group">
+            <h2>Agents</h2>
+            <p class="set-note" id="mcpstatus">Checking the local agent server…</p>
+            <div class="set-row set-col">
+              <span class="set-label">Claude Code: paste this once in a terminal</span>
+              <div class="cmdline">
+                <code id="mcpcmd"></code>
+                <button id="copycmd" class="setbtn">Copy</button>
+              </div>
+            </div>
+            <div class="set-row">
+              <span class="set-label">Claude Desktop</span>
+              <span id="desktopstate" class="set-val"></span>
+              <button id="desktopbtn" class="setbtn" hidden>Install</button>
+            </div>
+            <p class="set-note">Then, with a deck open, ask the agent to <em>“improve the deck open in Dek”</em>. It reads slides, edits the file, and looks at the result through snapshots. Everything it changes shows up in the Agent panel (⌘J) and is undoable with ⌘Z. The deck format guide agents read is also here: <button id="guidebtn" class="linkbtn inline">docs/DECK_FORMAT.md</button>.</p>
+          </div>
+
+          <div class="set-group">
+            <h2>About</h2>
+            <p class="set-note">Dek <span id="version">0.1.0</span>. A deck is one HTML file; each top-level <code>&lt;section&gt;</code> is a slide on a 1920×1080 canvas. <span class="faint">Made for the stage.</span></p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <aside id="agent" class="agent" aria-label="Agent activity">
+      <div class="agent-inner">
+        <div class="agent-head">
+          <span class="agent-title">Agents</span>
+          <span id="agentconn" class="agent-conn"></span>
+          <button id="agentclose" class="agent-close" title="Close (⌘J)" aria-label="Close agent panel">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7"/></svg>
+          </button>
+        </div>
+        <div id="agentlist" class="agent-list"></div>
+        <p id="agentempty" class="agent-empty">Nothing yet. <button id="agentsetup" class="linkbtn inline">Connect Claude Code or Claude Desktop</button>, then ask it to work on this deck. Every change it makes shows up here and lands in the file at once; ⌘Z undoes.</p>
+      </div>
+    </aside>
+  </div>
+
+  <div id="ctxmenu" class="ctxmenu" hidden role="menu"></div>
+
+  <div id="shortcuts" class="shortcuts" hidden role="dialog" aria-label="Keyboard shortcuts">
+    <div class="shortcuts-card">
+      <div class="shortcuts-head">
+        <span>Keyboard shortcuts</span>
+        <kbd>esc</kbd>
+      </div>
+      <div class="shortcuts-cols">
+        <dl>
+          <dt>Navigate</dt>
+          <dd><kbd>→</kbd> <kbd>space</kbd> <kbd>n</kbd><span>next step / slide</span></dd>
+          <dd><kbd>←</kbd> <kbd>⇧space</kbd> <kbd>p</kbd><span>previous</span></dd>
+          <dd><kbd>home</kbd> / <kbd>end</kbd><span>first / last slide</span></dd>
+          <dd><kbd>12</kbd> <kbd>⏎</kbd><span>type a number to jump</span></dd>
+          <dd><kbd>⌘P</kbd><span>go to slide by title</span></dd>
+          <dd><kbd>o</kbd><span>light table</span></dd>
+          <dt class="gap">Present</dt>
+          <dd><kbd>⌘⏎</kbd> <kbd>f</kbd><span>present from this slide</span></dd>
+          <dd><kbd>⌥⌘⏎</kbd><span>present from the start</span></dd>
+          <dd><kbd>⌥⌘P</kbd> <kbd>s</kbd><span>presenter view</span></dd>
+          <dd><kbd>b</kbd> / <kbd>w</kbd><span>black / white screen</span></dd>
+          <dd><kbd>esc</kbd><span>stop presenting</span></dd>
+        </dl>
+        <dl>
+          <dt>Deck</dt>
+          <dd><kbd>⌘O</kbd> / <kbd>⌘N</kbd><span>open / new deck</span></dd>
+          <dd><kbd>⌘R</kbd><span>reload from disk</span></dd>
+          <dd><kbd>⇧⌘N</kbd><span>new slide after current</span></dd>
+          <dd><kbd>⌘D</kbd><span>duplicate slide</span></dd>
+          <dd><kbd>⌘⌫</kbd><span>delete slide</span></dd>
+          <dd><kbd>⌥⌘↑</kbd> / <kbd>⌥⌘↓</kbd><span>move slide</span></dd>
+          <dd><kbd>⌘Z</kbd> / <kbd>⇧⌘Z</kbd><span>undo / redo any change</span></dd>
+          <dt class="gap">Edit</dt>
+          <dd><kbd>⌘E</kbd> <kbd>e</kbd><span>edit slide elements</span></dd>
+          <dd><kbd>⌥⌘T</kbd> / <kbd>⌥⌘H</kbd><span>insert text / heading</span></dd>
+          <dd><kbd>⌥⌘I</kbd><span>insert image</span></dd>
+          <dd><kbd>←↑→↓</kbd><span>nudge selection (⇧ ×10)</span></dd>
+          <dd><kbd>⏎</kbd> / <kbd>⌫</kbd><span>edit text / delete element</span></dd>
+          <dt class="gap">Panels</dt>
+          <dd><kbd>⌘K</kbd> <kbd>⇧⌘P</kbd><span>command palette</span></dd>
+          <dd><kbd>⌘\</kbd><span>slide navigator</span></dd>
+          <dd><kbd>⌘J</kbd><span>agent panel ✦</span></dd>
+          <dd><kbd>⌘,</kbd><span>settings</span></dd>
+          <dd><kbd>⌘/</kbd> <kbd>?</kbd><span>these shortcuts</span></dd>
+        </dl>
+      </div>
+    </div>
+  </div>
+
+  <div id="quickopen" class="quickopen" hidden role="dialog" aria-label="Go to slide or run a command">
+    <div class="quickopen-card">
+      <input id="qoinput" class="quickopeninput" type="text" placeholder="Go to slide, or type &gt; for commands…" autocomplete="off" spellcheck="false">
+      <div id="qolist" class="quickopenlist" role="listbox" aria-label="Results"></div>
+      <p id="qoempty" class="qo-empty" hidden></p>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden role="status"></div>
+
+  <div id="presenter" class="presenter" hidden>
+    <div class="pv-main">
+      <div class="pv-stage"><iframe id="pvframe" class="frame" title="Current slide"></iframe></div>
+    </div>
+    <div class="pv-side">
+      <div class="pv-nextwrap">
+        <span class="pv-label">Next</span>
+        <div id="pvnextbox" class="pv-nextbox"><iframe id="pvnext" class="frame" title="Next slide" tabindex="-1"></iframe><div id="pvend" class="pv-end" hidden>End of deck</div></div>
+      </div>
+      <div class="pv-noteswrap">
+        <span class="pv-label">Notes</span>
+        <div id="pvnotes" class="pv-notes"></div>
+      </div>
+    </div>
+    <div class="pv-bar">
+      <button id="pvtimer" class="pv-timer" title="Double-click to reset">00:00</button>
+      <span id="pvtimermode" class="pv-timermode">elapsed</span>
+      <span id="pvcounter" class="pv-counter"></span>
+      <span id="pvtitle" class="pv-title"></span>
+      <span class="pill-spacer"></span>
+      <span id="pvclock" class="pv-clock"></span>
+    </div>
+  </div>
+
+  <script src="dist/app.js"></script>
+</body>
+</html>
