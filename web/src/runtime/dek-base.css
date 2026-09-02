@@ -1,0 +1,78 @@
+/* Dek base — the canvas, not a theme. Injected before the deck's own <head>
+   so anything a deck writes wins. Slides are laid out on a 1920×1080 canvas;
+   `html { font-size: 32px }` makes 1rem read as "one slide point". */
+
+:root {
+  --dek-w: 1920px;
+  --dek-h: 1080px;
+  --dek-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --dek-transition-ms: 480ms;
+  --dek-fragment-ms: 320ms;
+  --dek-edit: oklch(0.83 0.12 82);
+  /* chart series colors; set these on :root in the deck to theme every chart */
+  --dek-c1: oklch(0.70 0.14 250);
+  --dek-c2: oklch(0.74 0.15 150);
+  --dek-c3: oklch(0.80 0.15 80);
+  --dek-c4: oklch(0.65 0.17 340);
+  --dek-c5: oklch(0.72 0.12 200);
+  --dek-c6: oklch(0.62 0.05 260);
+}
+html {
+  font-size: 32px;
+  -webkit-text-size-adjust: none;
+}
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+}
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+  color: #1a1a1a;
+  line-height: 1.35;
+  -webkit-font-smoothing: antialiased;
+}
+*, *::before, *::after { box-sizing: border-box; }
+
+.dek-root { background: #ffffff; }
+.dek-root > section { padding: 96px 120px; }
+.dek-root > section.dek-full { padding: 0; }
+
+h1, h2, h3, h4 { margin: 0 0 0.45em; line-height: 1.08; letter-spacing: -0.02em; font-weight: 700; }
+h1 { font-size: 2.6rem; }
+h2 { font-size: 1.9rem; }
+h3 { font-size: 1.3rem; letter-spacing: -0.01em; }
+h4 { font-size: 1.05rem; }
+p, li, td, th, dd, dt, figcaption, blockquote { font-size: 1rem; }
+p { margin: 0 0 0.7em; }
+ul, ol { margin: 0 0 0.7em; padding-left: 1.15em; }
+li { margin: 0.2em 0; }
+li::marker { opacity: 0.6; }
+blockquote { margin: 0.5em 0; padding-left: 0.8em; border-left: 3px solid currentColor; opacity: 0.85; }
+small, .dek-muted { opacity: 0.6; }
+strong, b { font-weight: 650; }
+a { color: inherit; }
+img, video, svg, canvas, iframe { max-width: 100%; }
+img, video { display: block; }
+figure { margin: 0; }
+table { border-collapse: collapse; }
+th, td { text-align: left; padding: 0.35em 0.8em 0.35em 0; border-bottom: 1px solid rgba(0, 0, 0, 0.14); }
+th { font-weight: 600; opacity: 0.7; font-size: 0.8rem; letter-spacing: 0.04em; text-transform: uppercase; }
+code, pre, kbd { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+code { font-size: 0.85em; }
+pre { font-size: 0.7rem; line-height: 1.5; padding: 0.9em 1.1em; border-radius: 0.35em; background: rgba(0, 0, 0, 0.06); overflow: hidden; margin: 0 0 0.7em; }
+pre code { font-size: inherit; }
+hr { border: 0; border-top: 1px solid rgba(0, 0, 0, 0.14); margin: 1em 0; }
+
+/* layout helpers (opt-in) */
+.dek-center { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+.dek-stack { display: flex; flex-direction: column; gap: var(--gap, 32px); }
+.dek-row { display: flex; align-items: center; gap: var(--gap, 48px); }
+.dek-cols { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: var(--gap, 72px); align-items: start; }
+.dek-cols-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap, 72px); align-items: start; }
+.dek-cols-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--gap, 56px); align-items: start; }
+.dek-fill { position: absolute; inset: 0; }
+.dek-bottom { position: absolute; left: 120px; right: 120px; bottom: 80px; }
+.dek-cover { object-fit: cover; width: 100%; height: 100%; }
