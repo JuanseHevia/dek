@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dek-web",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["--yes", "http-server", "web", "-p", "8742", "-c-1", "--silent"],
+      "port": 8742
+    }
+  ]
+}
