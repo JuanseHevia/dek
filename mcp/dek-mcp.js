@@ -236,6 +236,11 @@ const TOOLS = [
   { name: 'apply_theme', description: 'Dress the open deck in a design system: one <style id="dek-theme"> block, the motion and chart <meta>s, and the components the system owns. Undoable with ⌘Z. Without `id`, re-applies the deck\'s current system (use it after update_theme).', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, additionalProperties: false } },
   { name: 'remove_theme', description: 'Take the design system back off the open deck, leaving the deck\'s own CSS untouched.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
   {
+    name: 'export_theme',
+    description: 'Write a design system\'s composition — its guidelines as one self-contained HTML page: palette, type specimens at slide scale, spacing, motion with the easing curve drawn, chart defaults, every component rendered live with its source, and the full token list — to `path`, or next to the open deck when no path is given. The page is written in the system it documents. Give it to a teammate, or open it to review a system without touching a deck.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' }, path: { type: 'string', description: 'Absolute path ending in .html' } }, additionalProperties: false },
+  },
+  {
     name: 'capture_theme',
     description: 'Turn the look the open deck already has into a design system: its :root tokens, fonts, transition and components. The starting point when the user says "make a system out of this deck". Read the result with get_theme_system and refine it with update_theme.',
     inputSchema: { type: 'object', properties: { name: { type: 'string' }, description: { type: 'string' } }, additionalProperties: false },

@@ -134,7 +134,10 @@ section.inverted { --bg: oklch(0.18 0.02 265); --ink: oklch(0.96 0.01 90); --hai
 `apply_theme` reports `missing_vars`: custom properties the deck's CSS reads that the incoming system does not define. A non-empty list means those rules stopped resolving — rewrite them against the system's tokens, or put the values in the system's `css`.
 
 ### The tools
-`list_themes` (what exists, what is on the deck, whether it is out of date) · `list_theme_tokens` · `get_theme_system` · `preview_theme_css` (compile without writing) · `create_theme` · `update_theme` (merges a patch; `null` removes a key; every change is a new version) · `revert_theme` · `duplicate_theme` · `delete_theme` · `apply_theme` · `remove_theme` · `capture_theme` (turn the look a deck already has into a system — the way to start from a deck you like).
+`list_themes` (what exists, what is on the deck, whether it is out of date) · `list_theme_tokens` · `get_theme_system` · `preview_theme_css` (compile without writing) · `create_theme` · `update_theme` (merges a patch; `null` removes a key; every change is a new version) · `revert_theme` · `duplicate_theme` · `delete_theme` · `apply_theme` · `remove_theme` · `capture_theme` (turn the look a deck already has into a system — the way to start from a deck you like) · `export_theme` (write the system's composition, its guidelines as one self-contained page).
+
+### The composition
+Every system can render itself as a guidelines page: palette swatches, type specimens at slide scale, spacing, the motion language with its easing curve drawn, chart defaults, each component rendered live beside its source, and the full token list — all styled by the system itself, in one file with no scripts and nothing external to fetch. The user opens it by clicking a system in the sidebar (**Design** in the pill); `export_theme` writes it to disk. It is a document, not a deck: its sections are `<div>`s, so Dek finds no slides in it.
 
 Design one *with* the user: read the deck, agree the direction out loud, then write a complete token set in one `create_theme`, apply it, and check it with `snapshot_slide` on a title slide, a dense slide and a chart slide. Each `update_theme` is a version they can roll back, so give every one a `note` that says what changed.
 

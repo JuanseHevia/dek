@@ -15,6 +15,7 @@ import {
   compileSystemCss, chartDefaults, missingVars,
 } from './theme.js';
 import { createThemesUI } from './themes-ui.js';
+import { composeDocument } from './theme-doc.js';
 import FORMAT_GUIDE from '../../docs/DECK_FORMAT.md';
 import BLANK_TEMPLATE from '../../templates/blank.html';
 
@@ -37,9 +38,13 @@ const els = {
   guidebtn: $('guidebtn'), version: $('version'),
   agent: $('agent'), agentlist: $('agentlist'), agentempty: $('agentempty'), agentconn: $('agentconn'),
   ctxmenu: $('ctxmenu'), shortcuts: $('shortcuts'),
-  themebtn: $('themebtn'), themeswatch: $('themeswatch'), themename: $('themename'), themeversion: $('themeversion'),
-  thememenu: $('thememenu'), themes: $('themes'), themeslist: $('themeslist'), themesempty: $('themesempty'),
-  themescount: $('themescount'), themesclose: $('themesclose'), themesnew: $('themesnew'), themesask: $('themesask'),
+  designbtn: $('designbtn'), designswatch: $('designswatch'), designlabel: $('designlabel'),
+  navtitle: $('navtitle'), navback: $('navback'), dslist: $('dslist'), dsempty: $('dsempty'),
+  dscapture: $('dscapture'), dsask: $('dsask'),
+  compose: $('compose'), composeframe: $('composeframe'), composename: $('composename'), composever: $('composever'),
+  composeapply: $('composeapply'), composehistorybtn: $('composehistorybtn'), composeduplicate: $('composeduplicate'),
+  composesave: $('composesave'), composeask: $('composeask'), composedelete: $('composedelete'),
+  composeclose: $('composeclose'), composehist: $('composehist'),
   quickopen: $('quickopen'), qoinput: $('qoinput'), qolist: $('qolist'), qoempty: $('qoempty'),
   toast: $('toast'),
   presenter: $('presenter'), pvframe: $('pvframe'), pvnext: $('pvnext'), pvnextbox: $('pvnextbox'), pvend: $('pvend'),
@@ -131,7 +136,7 @@ function baseHrefFor(path) {
 
 const model = () => (state.deck ? state.deck.model : null);
 let themesUI = null;  // the design-system chrome, built once the deck helpers exist
-function themesPanelOpen() { return !!themesUI && themesUI.panelOpen(); }
+function designModeOpen() { return !!themesUI && themesUI.isOpen(); }
 const slideCount = () => (state.deck ? state.deck.model.slides.length : 0);
 function needDeck() {
   if (!state.deck) throw new Error('No deck is open in Dek. Use open_deck with an absolute path, or create_deck.');
@@ -331,7 +336,7 @@ function updateChrome() {
   els.deckname.title = state.deck ? state.deck.path : '';
   els.counter.textContent = n ? `${state.index + 1} / ${n}` : '– / –';
   els.navcount.textContent = n ? String(n) : '';
-  els.empty.classList.toggle('show', !state.deck && !state.settingsOpen && !themesPanelOpen() && !PRESENTER_MODE);
+  els.empty.classList.toggle('show', !state.deck && !state.settingsOpen && !designModeOpen() && !PRESENTER_MODE);
   renderThemes();
   els.frame.hidden = !state.deck;
   els.presentbtn.disabled = !n;
@@ -413,8 +418,7 @@ function setPresenting(on, o = {}) {
     setEditing(false);
     setOverview(false);
     setSettingsOpen(false);
-    setThemesPanelOpen(false);
-    themesUI.closeMenu();
+    setDesignOpen(false);
     closeContextMenu();
     setShortcutsOpen(false);
     palette.close();
@@ -622,13 +626,13 @@ els.insertbar.addEventListener('click', (e) => {
 });
 els.editbtn.addEventListener('click', () => setEditing(!state.editing));
 window.addEventListener('resize', placeEltools);
-window.addEventListener('resize', () => themesUI && themesUI.closeMenu());
+window.addEventListener('resize', () => themesUI && themesUI.fit());
 
 // ---------- overview (light table) ----------
 
 function setOverview(on) {
   if (on === state.overview) return;
-  if (on) { setEditing(false); setThemesPanelOpen(false); }
+  if (on) { setEditing(false); setDesignOpen(false); }
   state.overview = on;
   els.overview.hidden = !on;
   document.body.classList.toggle('overview-open', on);
@@ -753,7 +757,7 @@ function setAgentOpen(open) {
 }
 
 function setSettingsOpen(open) {
-  if (open) { setEditing(false); setThemesPanelOpen(false); }
+  if (open) { setEditing(false); setDesignOpen(false); }
   state.settingsOpen = open;
   els.settings.hidden = !open;
   els.settingsbtn.classList.toggle('active', open);
@@ -952,6 +956,19 @@ function captureThemeFromDeck(o = {}) {
   return theme;
 }
 
+/** Write a system's composition next to the deck, as a standalone page. */
+function saveThemeDoc(id, html) {
+  const theme = needTheme(id);
+  const safe = theme.name.replace(/[\\/:*?"<>|]/g, '-').trim() || theme.id;
+  const dir = state.deck ? state.deck.path.replace(/[^/]*$/, '') : null;
+  if (!dir) { toast('Open a deck first: the file is written next to it'); return null; }
+  const path = `${dir}${safe} — design system.html`;
+  if (state.inRpc) state.rpcWrites.push({ path, content: html });
+  else write(path, html);
+  toast(`Saved “${path.split('/').pop()}” next to the deck`);
+  return path;
+}
+
 /** Hand the conversation back to Claude Code with a prompt that already has the context. */
 function askClaudeForTheme(id) {
   const theme = id ? findTheme(state.themes, id) : null;
@@ -1003,16 +1020,21 @@ themesUI = createThemesUI({
     capture: () => {
       try {
         const theme = captureThemeFromDeck();
-        toast(`Saved “${theme.name}” — apply it from the design system menu`);
+        themesUI.select(theme.id);
+        toast(`Captured “${theme.name}” — Apply to Deck when you are ready`);
       } catch (e) { toast(e.message || String(e)); }
     },
     ask: (id) => askClaudeForTheme(id),
+    save: (id, html) => saveThemeDoc(id, html),
+    showNav: () => { if (!state.navOpen) setNavOpen(true); },
   },
 });
 
-function setThemesPanelOpen(open) {
+/** Design mode: the sidebar lists systems and the stage can show a composition. */
+function setDesignOpen(open) {
+  if (open === designModeOpen()) return;
   if (open) { setSettingsOpen(false); setOverview(false); setEditing(false); }
-  themesUI.setPanelOpen(open);
+  themesUI.setOpen(open);
   updateChrome();
   if (!open) stage.focus();
 }
@@ -1093,7 +1115,7 @@ const COMMANDS = () => [
   { label: 'Toggle Slide Navigator', hint: '⌘\\', run: () => setNavOpen(!state.navOpen) },
   { label: 'Toggle Agent Panel', hint: '⌘J', run: () => setAgentOpen(!state.agentOpen) },
   ...themeList().map((t) => ({ label: `Design System: ${t.name}`, hint: `v${currentVersion(t)}`, run: () => { try { applyThemeToDeck(t.id); } catch (e) { toast(e.message || String(e)); } } })),
-  { label: 'Design Systems…', hint: '⌥⌘D', run: () => setThemesPanelOpen(true) },
+  { label: 'Design Systems…', hint: '⌥⌘D', run: () => setDesignOpen(true) },
   { label: 'Remove Design System From Deck', hint: '', run: () => { try { detachTheme(); } catch (e) { toast(e.message || String(e)); } } },
   { label: 'Capture This Deck’s Look as a Design System', hint: '', run: () => { try { const t = captureThemeFromDeck(); toast(`Saved “${t.name}” — apply it from the design system menu`); } catch (e) { toast(e.message || String(e)); } } },
   { label: 'Settings…', hint: '⌘,', run: () => setSettingsOpen(!state.settingsOpen) },
@@ -1115,8 +1137,7 @@ const palette = createPalette({
 
 function escapeKey() {
   if (!els.ctxmenu.hidden) { closeContextMenu(); return true; }
-  if (themesUI.menuOpen()) { themesUI.closeMenu(); return true; }
-  if (themesPanelOpen()) { setThemesPanelOpen(false); return true; }
+  if (themesUI.escape()) { updateChrome(); stage.focus(); return true; }
   if (palette.isOpen()) { palette.close(); return true; }
   if (!els.shortcuts.hidden) { setShortcutsOpen(false); return true; }
   if (state.settingsOpen) { setSettingsOpen(false); return true; }
@@ -1208,8 +1229,8 @@ function command(name, arg) {
     case 'nav': setNavOpen(!state.navOpen); break;
     case 'agent': setAgentOpen(!state.agentOpen); break;
     case 'settings': setSettingsOpen(!state.settingsOpen); break;
-    case 'themes': themesUI.toggle(); break;
-    case 'themesPanel': setThemesPanelOpen(!themesPanelOpen()); break;
+    case 'themes': setDesignOpen(!designModeOpen()); break;
+    case 'themesPanel': setDesignOpen(true); break;
     case 'shortcuts': setShortcutsOpen(els.shortcuts.hidden); break;
     case 'reload': send({ type: 'reload' }); break;
     case 'duplicate': if (state.deck) duplicateSlide(state.index); break;
@@ -1512,6 +1533,18 @@ const TOOLS = {
   remove_theme() {
     const r = detachTheme({ quiet: true });
     return { result: r, summary: r.changed ? 'removed the design system from the deck' : 'the deck had no design system' };
+  },
+  export_theme(a) {
+    const theme = a.id ? needTheme(a.id) : (activeTheme() || {}).theme;
+    if (!theme) throw new Error('Pass an id, or apply a design system to this deck first.');
+    const html = composeDocument(theme);
+    if (a.path) {
+      if (!/^\//.test(a.path) || !/\.html?$/i.test(a.path)) throw new Error('path must be an absolute path ending in .html');
+      state.rpcWrites.push({ path: a.path, content: html });
+      return { result: { id: theme.id, path: a.path, bytes: html.length }, summary: `wrote the “${theme.name}” composition to ${a.path.split('/').pop()}` };
+    }
+    const path = saveThemeDoc(theme.id, html);
+    return { result: { id: theme.id, path, bytes: html.length }, summary: `wrote the “${theme.name}” composition${path ? ` to ${path.split('/').pop()}` : ''}` };
   },
   capture_theme(a) {
     const theme = captureThemeFromDeck({ name: a.name, description: a.description });
