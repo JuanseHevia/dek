@@ -208,13 +208,14 @@ body.native .nav-head { padding-top: calc(var(--bar-top) + 2px); }
 .nav-foot {
   width: var(--nav-w);
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 4px;
-  padding: 6px 12px 12px 14px;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px 12px 14px;
   border-top: 1px solid var(--hairline);
 }
-.nav-actions { display: flex; align-items: center; gap: 6px; }
+.nav-actions { display: flex; align-items: center; gap: 6px; width: 100%; }
+.navbtn:disabled { opacity: 0.4; }
+.navbtn { white-space: nowrap; }
 .nav-spacer, .pill-spacer { flex: 1; }
 .navbtn {
   display: inline-flex;
@@ -500,90 +501,66 @@ body.native .agent-inner { padding-top: calc(var(--bar-top) + 2px); }
 
 /* ---------- design systems ---------- */
 
-.themebtn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 6px 8px;
-  border-radius: 7px;
-  color: var(--ink-2);
-  font-size: 12px;
-  text-align: left;
-  transition: background 150ms var(--ease), color 150ms var(--ease);
-}
-.themebtn:hover, .themebtn.open { background: var(--raised); color: var(--ink); }
-.themebtn.none .theme-name { color: var(--ink-3); }
-.theme-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.theme-version { font: 500 10px var(--mono); color: var(--ink-3); }
-.themebtn.stale .theme-version { color: var(--spot); }
-.theme-chev { flex: none; opacity: 0.6; }
+.designbtn { display: inline-flex; align-items: center; gap: 7px; }
+.designbtn.active { color: var(--spot); }
+.designbtn.stale .theme-swatch { box-shadow: inset 0 0 0 1px var(--spot); }
+.designlabel { max-width: 168px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .theme-swatch { display: inline-flex; flex: none; border-radius: 3px; overflow: hidden; box-shadow: inset 0 0 0 1px var(--hairline); }
 .theme-swatch i { display: block; width: 6px; height: 14px; }
 .theme-swatch.mini i { width: 4px; height: 11px; }
 
-.thememenu { min-width: 268px; max-width: 320px; }
-.thememenu button { align-items: center; gap: 8px; justify-content: flex-start; }
-.thememenu button.on .nm { color: var(--spot); }
-.theme-check { flex: none; width: 11px; color: var(--spot); display: inline-flex; }
-.theme-row-text { flex: 1; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.theme-row-text .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.theme-row-text .sub { font-size: 11px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.thememenu .hint { flex: none; font: 500 11px var(--mono); color: var(--ink-3); align-self: center; }
-.theme-menu-empty { color: var(--ink-2); font-size: 12px; line-height: 1.5; padding: 10px 10px 4px; max-width: 40ch; }
+.navback {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; margin-right: -4px; border-radius: 5px;
+  color: var(--ink-3); align-self: center;
+  transition: background 150ms var(--ease), color 150ms var(--ease);
+}
+.navback:hover { background: var(--raised); color: var(--ink); }
 
-.settings-inner.wide { max-width: 780px; }
-.theme-list { display: flex; flex-direction: column; gap: 14px; margin: 18px 0 20px; }
-.theme-empty { color: var(--ink-2); font-size: 12px; line-height: 1.55; padding: 10px 0 18px; max-width: 60ch; }
-.theme-card {
-  background: var(--chrome);
-  border: 1px solid var(--hairline);
-  border-radius: 12px;
-  padding: 14px 16px 12px;
-}
-.theme-card.active { border-color: var(--spot); }
-.theme-card-head { display: flex; align-items: flex-start; gap: 12px; }
-.theme-card-head .theme-swatch { margin-top: 3px; }
-.theme-card-head .theme-swatch i { width: 9px; height: 20px; }
-.theme-card-names { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.theme-title, .theme-desc {
-  width: 100%;
-  background: transparent;
+.dslist { width: var(--nav-w); flex: 1; overflow-y: auto; padding: 4px 10px 10px; display: flex; flex-direction: column; gap: 2px; }
+.ds-item {
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 10px; border-radius: 8px; cursor: default;
   border: 1px solid transparent;
-  border-radius: 6px;
-  padding: 2px 6px;
-  margin-left: -6px;
-  color: var(--ink);
-  font: 600 15px var(--sans);
-  letter-spacing: -0.01em;
+  transition: background 150ms var(--ease);
 }
-.theme-desc { font: 400 12px var(--sans); color: var(--ink-2); }
-.theme-title:hover, .theme-desc:hover { border-color: var(--hairline); }
-.theme-title:focus, .theme-desc:focus { border-color: var(--spot); background: var(--raised); outline: none; }
-.theme-badge { flex: none; font: 500 11px var(--mono); color: var(--ink-3); padding-top: 5px; }
-.theme-card.active .theme-badge { color: var(--spot); }
-.theme-tokens { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 24px; margin: 12px 0 4px; }
-.theme-token { display: flex; gap: 8px; font-size: 12px; line-height: 1.8; min-width: 0; }
-.theme-token .k { flex: 0 0 84px; color: var(--ink-3); }
-.theme-token .v { flex: 1; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.theme-card-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
-.theme-card-actions .setbtn.danger { color: var(--ink-2); }
-.theme-card-actions .setbtn.danger:hover, .theme-card-actions .setbtn.danger.on { color: var(--danger); border-color: var(--danger); }
-.theme-history { margin-top: 12px; border-top: 1px solid var(--hairline); padding-top: 8px; }
-.theme-rev {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 5px 2px;
-  font-size: 12px;
-  color: var(--ink-2);
+.ds-item:hover { background: var(--raised); }
+.ds-item.current { background: var(--raised); border-color: var(--spot); }
+.ds-item-head { display: flex; align-items: center; gap: 8px; }
+.ds-item .theme-swatch i { height: 16px; }
+.ds-name { flex: 1; font-size: 13px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ds-on { flex: none; font-size: 10px; color: var(--spot); line-height: 1; }
+.ds-sub { font-size: 11px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ds-empty { width: var(--nav-w); padding: 8px 14px 14px; margin: 0; font-size: 12px; line-height: 1.55; color: var(--ink-2); }
+
+/* the composition: a system's guidelines on the stage */
+.compose {
+  position: absolute; inset: 0; z-index: 8;
+  display: flex; flex-direction: column;
+  background: var(--theatre);
 }
+.compose-bar {
+  display: flex; align-items: center; gap: 6px;
+  padding: calc(var(--bar-top) + 46px) 24px 12px;
+  border-bottom: 1px solid var(--hairline);
+}
+.compose-name { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; color: var(--ink); }
+.compose-ver { font: 500 11px var(--mono); color: var(--ink-3); }
+.compose-bar .setbtn.danger { color: var(--ink-2); }
+.compose-bar .setbtn.danger:hover, .compose-bar .setbtn.danger.on { color: var(--danger); border-color: var(--danger); }
+.compose-hist { padding: 6px 24px 10px; border-bottom: 1px solid var(--hairline); max-height: 40%; overflow-y: auto; }
+.compose-view { flex: 1; position: relative; overflow: hidden; }
+.compose-frame { position: absolute; top: 0; left: 0; border: 0; transform-origin: top left; background: #fff; }
+
+.theme-rev { display: flex; align-items: center; gap: 10px; padding: 5px 2px; font-size: 12px; color: var(--ink-2); }
 .theme-rev + .theme-rev { border-top: 1px solid var(--hairline); }
-.theme-history .v { flex: 0 0 34px; font: 500 11px var(--mono); color: var(--ink-3); }
-.theme-history .note { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.theme-history .when { flex: none; color: var(--ink-3); font-size: 11px; }
-.theme-history .hint { flex: none; font: 500 11px var(--mono); color: var(--spot); }
-.theme-history .current .note { color: var(--ink); }
+.theme-rev .v { flex: 0 0 34px; font: 500 11px var(--mono); color: var(--ink-3); }
+.theme-rev .note { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.theme-rev .when { flex: none; color: var(--ink-3); font-size: 11px; }
+.theme-rev .hint { flex: none; font: 500 11px var(--mono); color: var(--spot); }
+.theme-rev.current .note { color: var(--ink); }
+
+body.presenting .compose { display: none; }
 
 /* ---------- context menu ---------- */
 

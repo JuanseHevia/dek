@@ -1,11 +1,10 @@
-// Design systems in the chrome: the nav-bar button, the switcher popover and
-// the management panel. Pure view code — every mutation goes back out through
-// the `actions` the shell passes in.
+// Design systems in the chrome. The pill is the way in; the left sidebar lists
+// what exists; clicking one puts its composition — the guidelines, written in
+// the system itself — on the stage. Pure view code: every mutation goes back
+// out through the `actions` the shell passes in.
 
 import { currentSystem, currentVersion, themeSummary, MAX_THEMES } from './theme.js';
-
-const CHEVRON = '<svg class="theme-chev" width="9" height="6" viewBox="0 0 9 6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4.2 4.5 1 8 4.2"/></svg>';
-const CHECK = '<svg width="11" height="9" viewBox="0 0 11 9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4.6 4 7.5 10 1.3"/></svg>';
+import { composeDocument, DOC_WIDTH } from './theme-doc.js';
 
 const text = (tag, cls, value) => {
   const el = document.createElement(tag);
@@ -34,227 +33,207 @@ function relDay(ts) {
   return new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 
-/**
- * @param els     the theme elements from index.html
- * @param actions what the shell can do: list/active/apply/detach/remove/rename/revert/duplicate/capture/ask
- */
 export function createThemesUI({ els, actions }) {
-  let panelOpen = false;
-  let openHistory = null;   // id whose version list is expanded
-  let confirmDelete = null; // id armed for deletion
+  let open = false;        // the sidebar is showing design systems
+  let selectedId = null;   // whose composition is on the stage
+  let historyOpen = false;
+  let confirmDelete = null;
+  let docKey = '';         // what the iframe currently holds
 
-  // ---------- the nav-bar button ----------
+  const list = () => actions.list();
+  const selected = () => (selectedId ? list().find((t) => t.id === selectedId) || null : null);
+
+  // ---------- the pill button ----------
 
   function renderButton() {
     const active = actions.active();
-    const stale = active && active.stale;
-    els.themename.textContent = active ? active.theme.name : 'No design system';
-    els.themebtn.classList.toggle('none', !active);
-    els.themebtn.classList.toggle('stale', !!stale);
-    els.themebtn.title = active
-      ? `Design system: ${active.theme.name} v${active.appliedVersion}${stale ? ` · v${currentVersion(active.theme)} is newer` : ''} (⌥⌘D)`
-      : 'Choose a design system for this deck (⌥⌘D)';
-    els.themeswatch.replaceChildren(...(active
-      ? Array.from(swatchStrip(themeSummary(active.theme).swatches).childNodes)
-      : Array.from(swatchStrip(['transparent', 'transparent', 'transparent']).childNodes)));
-    els.themeversion.textContent = active ? `v${active.appliedVersion}${stale ? '+' : ''}` : '';
+    els.designbtn.classList.toggle('active', open);
+    els.designbtn.classList.toggle('stale', !!(active && active.stale));
+    els.designlabel.textContent = active ? active.theme.name : 'Design';
+    els.designbtn.title = active
+      ? `${active.theme.name} v${active.appliedVersion}${active.stale ? ` · v${currentVersion(active.theme)} is newer` : ''} — design systems (⌥⌘D)`
+      : 'Design systems (⌥⌘D)';
+    els.designswatch.replaceChildren(
+      ...(active ? Array.from(swatchStrip(themeSummary(active.theme).swatches.slice(0, 3)).childNodes) : []),
+    );
+    els.designswatch.hidden = !active;
   }
 
-  // ---------- the switcher popover ----------
+  // ---------- the sidebar list ----------
 
-  function row({ label, hint, on, danger, run, swatches, sub }) {
-    const b = document.createElement('button');
-    b.setAttribute('role', 'menuitem');
-    if (danger) b.className = 'danger';
-    if (on) b.classList.add('on');
-    const check = text('span', 'theme-check');
-    check.innerHTML = on ? CHECK : '';
-    b.appendChild(check);
-    if (swatches) b.appendChild(swatchStrip(swatches, 'theme-swatch mini'));
-    const stack = text('span', 'theme-row-text');
-    stack.appendChild(text('span', 'nm', label));
-    if (sub) stack.appendChild(text('span', 'sub', sub));
-    b.appendChild(stack);
-    if (hint) b.appendChild(text('span', 'hint', hint));
-    b.addEventListener('click', () => { closeMenu(); run(); });
-    return b;
-  }
-
-  function renderMenu() {
-    const themes = actions.list();
+  function card(theme) {
     const active = actions.active();
-    const menu = els.thememenu;
-    menu.replaceChildren();
-    if (!themes.length) {
-      const empty = text('p', 'theme-menu-empty', 'No design systems yet. Ask Claude Code to build one, or capture the look of this deck.');
-      menu.appendChild(empty);
+    const s = themeSummary(theme);
+    const isOn = !!active && active.theme.id === theme.id;
+    const el = text('div', 'ds-item' + (theme.id === selectedId ? ' current' : '') + (isOn ? ' applied' : ''));
+    el.setAttribute('role', 'option');
+    el.setAttribute('aria-selected', String(theme.id === selectedId));
+    el.tabIndex = -1;
+
+    const head = text('div', 'ds-item-head');
+    head.appendChild(swatchStrip(s.swatches));
+    head.appendChild(text('span', 'ds-name', theme.name));
+    if (isOn) {
+      const dot = text('span', 'ds-on');
+      dot.title = active.stale ? `on this deck at v${active.appliedVersion}; v${s.version} is newer` : 'on this deck';
+      dot.textContent = active.stale ? '↑' : '●';
+      head.appendChild(dot);
     }
-    for (const theme of themes) {
-      const s = themeSummary(theme);
-      const isActive = !!active && active.theme.id === theme.id;
-      menu.appendChild(row({
-        label: theme.name,
-        sub: `${s.mode} · ${s.fonts.display} · v${s.version}`,
-        hint: isActive && active.stale ? 'update' : '',
-        on: isActive,
-        swatches: s.swatches,
-        run: () => actions.apply(theme.id),
-      }));
-    }
-    menu.appendChild(document.createElement('hr'));
-    if (active) menu.appendChild(row({ label: 'Remove From This Deck', run: () => actions.detach() }));
-    menu.appendChild(row({ label: 'Save This Deck’s Look As a System…', run: () => actions.capture() }));
-    menu.appendChild(row({ label: 'Design Systems…', hint: `${themes.length} / ${MAX_THEMES}`, run: () => setPanelOpen(true) }));
-    menu.appendChild(row({ label: 'Ask Claude Code For One', run: () => actions.ask() }));
+    el.appendChild(head);
+    el.appendChild(text('span', 'ds-sub', `${s.mode} · ${s.fonts.display} · v${s.version}`));
+    el.addEventListener('click', () => select(theme.id));
+    return el;
   }
 
-  function openMenu() {
-    renderMenu();
-    els.thememenu.hidden = false;
-    const b = els.themebtn.getBoundingClientRect();
-    const m = els.thememenu.getBoundingClientRect();
-    els.thememenu.style.left = Math.max(8, b.left) + 'px';
-    els.thememenu.style.top = Math.max(8, b.top - m.height - 8) + 'px';
-    els.themebtn.classList.add('open');
-  }
-  function closeMenu() {
-    if (els.thememenu.hidden) return;
-    els.thememenu.hidden = true;
-    els.themebtn.classList.remove('open');
-  }
-  const menuOpen = () => !els.thememenu.hidden;
-
-  // ---------- the management panel ----------
-
-  function field(value, placeholder, cls, commit) {
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.className = cls;
-    input.value = value || '';
-    input.placeholder = placeholder;
-    input.spellcheck = false;
-    input.addEventListener('keydown', (e) => {
-      e.stopPropagation();
-      if (e.key === 'Enter') input.blur();
-      if (e.key === 'Escape') { input.value = value || ''; input.blur(); }
-    });
-    input.addEventListener('change', () => commit(input.value));
-    input.addEventListener('blur', () => commit(input.value));
-    return input;
+  function renderList() {
+    if (!open) return;
+    const themes = list();
+    els.dslist.replaceChildren(...themes.map(card));
+    els.dsempty.hidden = themes.length > 0;
+    els.navcount.textContent = `${themes.length}/${MAX_THEMES}`;
+    els.dscapture.disabled = themes.length >= MAX_THEMES;
+    els.dscapture.title = themes.length >= MAX_THEMES
+      ? `Delete a system first: the library holds ${MAX_THEMES}.`
+      : 'Start a system from the look this deck already has';
   }
 
-  function action(label, run, cls = '') {
-    const b = text('button', `setbtn ${cls}`.trim(), label);
-    b.addEventListener('click', run);
-    return b;
-  }
+  // ---------- the composition ----------
 
-  function historyList(theme) {
-    const box = text('div', 'theme-history');
+  function renderHistory() {
+    const theme = selected();
+    els.composehist.hidden = !historyOpen || !theme;
+    if (!historyOpen || !theme) return;
     const now = currentVersion(theme);
-    for (const v of [...theme.versions].reverse()) {
+    els.composehist.replaceChildren(...[...theme.versions].reverse().map((v) => {
       const line = text('div', 'theme-rev' + (v.v === now ? ' current' : ''));
       line.appendChild(text('span', 'v', `v${v.v}`));
       line.appendChild(text('span', 'note', v.note || 'updated'));
       line.appendChild(text('span', 'when', relDay(v.at)));
       line.appendChild(swatchStrip([v.system.color.bg, v.system.color.ink, v.system.color.accent], 'theme-swatch mini'));
       if (v.v === now) line.appendChild(text('span', 'hint', 'in force'));
-      else line.appendChild(action('Restore', () => actions.revert(theme.id, v.v)));
-      box.appendChild(line);
-    }
-    return box;
+      else {
+        const b = text('button', 'setbtn', 'Restore');
+        b.addEventListener('click', () => actions.revert(theme.id, v.v));
+        line.appendChild(b);
+      }
+      return line;
+    }));
   }
 
-  function tokenLine(label, value) {
-    const line = text('div', 'theme-token');
-    line.appendChild(text('span', 'k', label));
-    line.appendChild(text('span', 'v', value));
-    return line;
-  }
-
-  function themeCard(theme) {
+  function renderCompose() {
+    const theme = selected();
+    els.compose.hidden = !theme;
+    document.body.classList.toggle('composing', !!theme);
+    if (!theme) { docKey = ''; return; }
     const active = actions.active();
-    const isActive = !!active && active.theme.id === theme.id;
-    const s = themeSummary(theme);
-    const system = currentSystem(theme);
-    const card = text('div', 'theme-card' + (isActive ? ' active' : ''));
+    const isOn = !!active && active.theme.id === theme.id;
+    const v = currentVersion(theme);
+    els.composename.textContent = theme.name;
+    els.composever.textContent = isOn
+      ? (active.stale ? `on this deck at v${active.appliedVersion} · v${v} is newer` : `on this deck · v${v}`)
+      : `v${v} · ${theme.versions.length} version${theme.versions.length === 1 ? '' : 's'}`;
+    els.composeapply.textContent = isOn && !active.stale ? 'Re-apply' : 'Apply to Deck';
+    els.composeapply.classList.toggle('primary', isOn && active.stale);
+    els.composehistorybtn.textContent = historyOpen ? 'Hide History' : 'History';
+    els.composedelete.textContent = confirmDelete === theme.id ? 'Really Delete' : 'Delete';
+    els.composedelete.classList.toggle('on', confirmDelete === theme.id);
 
-    const head = text('div', 'theme-card-head');
-    head.appendChild(swatchStrip(s.swatches));
-    const names = text('div', 'theme-card-names');
-    names.appendChild(field(theme.name, 'Name', 'theme-title', (v) => actions.rename(theme.id, { name: v })));
-    names.appendChild(field(theme.description, 'What it is for', 'theme-desc', (v) => actions.rename(theme.id, { description: v })));
-    head.appendChild(names);
-    const badge = text('span', 'theme-badge', isActive ? (active.stale ? `v${active.appliedVersion} → v${s.version}` : `on this deck · v${s.version}`) : `v${s.version}`);
-    head.appendChild(badge);
-    card.appendChild(head);
-
-    const tokens = text('div', 'theme-tokens');
-    tokens.appendChild(tokenLine('Mode', system.meta.mode + (s.mood ? ` · ${s.mood}` : '')));
-    tokens.appendChild(tokenLine('Type', `${s.fonts.display} / ${s.fonts.body} · ${system.typography.scale.h1} headings`));
-    tokens.appendChild(tokenLine('Motion', `${system.motion.transition} ${system.motion.transitionMs}ms · fragments ${system.motion.fragment}`));
-    tokens.appendChild(tokenLine('Charts', `${(system.chart.palette.length ? system.chart.palette : system.color.series).length} series · grid ${system.chart.grid ? 'on' : 'off'}${system.chart.values ? ' · values on' : ''}`));
-    const comps = Object.keys(system.components || {});
-    tokens.appendChild(tokenLine('Components', comps.length ? comps.join(', ') : 'none'));
-    tokens.appendChild(tokenLine('History', `${theme.versions.length} version${theme.versions.length === 1 ? '' : 's'} · updated ${relDay(theme.updatedAt)}`));
-    card.appendChild(tokens);
-
-    const bar = text('div', 'theme-card-actions');
-    bar.appendChild(action(isActive && !active.stale ? 'Re-apply' : 'Apply to Deck', () => actions.apply(theme.id), isActive && active.stale ? 'primary' : ''));
-    bar.appendChild(action(openHistory === theme.id ? 'Hide History' : 'History', () => { openHistory = openHistory === theme.id ? null : theme.id; renderPanel(); }));
-    bar.appendChild(action('Duplicate', () => actions.duplicate(theme.id)));
-    bar.appendChild(action('Edit With Claude Code', () => actions.ask(theme.id)));
-    const spacer = text('span', 'nav-spacer');
-    bar.appendChild(spacer);
-    bar.appendChild(action(confirmDelete === theme.id ? 'Really Delete' : 'Delete', () => {
-      if (confirmDelete !== theme.id) { confirmDelete = theme.id; renderPanel(); setTimeout(() => { if (confirmDelete === theme.id) { confirmDelete = null; renderPanel(); } }, 4000); return; }
-      confirmDelete = null;
-      actions.remove(theme.id);
-    }, confirmDelete === theme.id ? 'danger on' : 'danger'));
-    card.appendChild(bar);
-
-    if (openHistory === theme.id) card.appendChild(historyList(theme));
-    return card;
+    // rebuilding the document reloads the iframe, so only do it when it changed
+    const key = `${theme.id}@${v}@${theme.updatedAt}@${theme.name}`;
+    if (key !== docKey) {
+      docKey = key;
+      els.composeframe.srcdoc = composeDocument(theme);
+    }
+    // the pane has no measurable size in the frame it is revealed in
+    fitCompose();
+    requestAnimationFrame(fitCompose);
+    setTimeout(fitCompose, 80);
+    renderHistory();
   }
 
-  function renderPanel() {
-    if (!panelOpen) return;
-    // never rebuild the cards while a name or description is being typed into
-    if (els.themeslist.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
-    const themes = actions.list();
-    els.themescount.textContent = `${themes.length} of ${MAX_THEMES}`;
-    els.themesempty.hidden = themes.length > 0;
-    els.themeslist.replaceChildren(...themes.map(themeCard));
-    els.themesnew.disabled = themes.length >= MAX_THEMES;
-    els.themesnew.title = themes.length >= MAX_THEMES ? `Delete a system first: the library holds ${MAX_THEMES}.` : 'Start a system from the look this deck already has';
+  /** The composition is authored at a fixed width; scale it down only when the pane is narrower. */
+  function fitCompose() {
+    const view = els.composeframe.parentElement;
+    if (!view) return;
+    const w = view.clientWidth;
+    const h = view.clientHeight;
+    if (!w || !h) return;
+    const scale = Math.min(1, w / DOC_WIDTH);
+    els.composeframe.style.width = DOC_WIDTH + 'px';
+    els.composeframe.style.height = Math.ceil(h / scale) + 'px';
+    els.composeframe.style.transform = `scale(${scale})`;
   }
 
-  function setPanelOpen(on) {
-    panelOpen = !!on;
-    openHistory = null;
+  function select(id) {
+    selectedId = id;
+    historyOpen = false;
     confirmDelete = null;
-    els.themes.hidden = !panelOpen;
-    if (panelOpen) { closeMenu(); renderPanel(); }
-    return panelOpen;
+    renderList();
+    renderCompose();
+  }
+
+  function setOpen(on) {
+    open = !!on;
+    if (!open) { selectedId = null; historyOpen = false; confirmDelete = null; }
+    document.body.classList.toggle('design-mode', open);
+    els.thumbs.hidden = open;
+    els.dslist.hidden = !open;
+    els.dsempty.hidden = true;
+    els.navback.hidden = !open;
+    els.addslide.hidden = open;
+    els.dscapture.hidden = !open;
+    els.dsask.hidden = !open;
+    els.navtitle.textContent = open ? 'Design systems' : 'Slides';
+    if (open) { actions.showNav(); renderList(); }
+    renderCompose();
+    renderButton();
+    return open;
   }
 
   // ---------- wiring ----------
 
-  els.themebtn.addEventListener('click', () => (menuOpen() ? closeMenu() : openMenu()));
-  els.themesclose.addEventListener('click', () => setPanelOpen(false));
-  els.themesnew.addEventListener('click', () => actions.capture());
-  els.themesask.addEventListener('click', () => actions.ask());
-  document.addEventListener('mousedown', (e) => {
-    if (!menuOpen()) return;
-    if (!e.target.closest('#thememenu') && !e.target.closest('#themebtn')) closeMenu();
+  els.designbtn.addEventListener('click', () => setOpen(!open));
+  els.navback.addEventListener('click', () => setOpen(false));
+  els.composeclose.addEventListener('click', () => select(null));
+  els.dscapture.addEventListener('click', () => actions.capture());
+  els.dsask.addEventListener('click', () => actions.ask());
+  els.composeask.addEventListener('click', () => { const t = selected(); if (t) actions.ask(t.id); });
+  els.composeapply.addEventListener('click', () => { const t = selected(); if (t) actions.apply(t.id); });
+  els.composeduplicate.addEventListener('click', () => { const t = selected(); if (t) actions.duplicate(t.id); });
+  els.composesave.addEventListener('click', () => { const t = selected(); if (t) actions.save(t.id, composeDocument(t)); });
+  els.composehistorybtn.addEventListener('click', () => { historyOpen = !historyOpen; renderCompose(); });
+  els.composedelete.addEventListener('click', () => {
+    const t = selected();
+    if (!t) return;
+    if (confirmDelete !== t.id) {
+      confirmDelete = t.id;
+      renderCompose();
+      setTimeout(() => { if (confirmDelete === t.id) { confirmDelete = null; renderCompose(); } }, 4000);
+      return;
+    }
+    confirmDelete = null;
+    actions.remove(t.id);
   });
-  window.addEventListener('blur', closeMenu);
+  window.addEventListener('resize', fitCompose);
+  // the pane has no size until it is shown, and the iframe none until it loads
+  els.composeframe.addEventListener('load', fitCompose);
+  if (window.ResizeObserver && els.composeframe.parentElement) {
+    new ResizeObserver(fitCompose).observe(els.composeframe.parentElement);
+  }
 
   return {
-    render() { renderButton(); renderMenu(); renderPanel(); },
-    openMenu, closeMenu, menuOpen,
-    setPanelOpen,
-    panelOpen: () => panelOpen,
-    toggle() { if (panelOpen) { setPanelOpen(false); return; } if (menuOpen()) closeMenu(); else openMenu(); },
+    render() { renderButton(); renderList(); renderCompose(); },
+    setOpen,
+    isOpen: () => open,
+    toggle() { return setOpen(!open); },
+    select,
+    selectedId: () => selectedId,
+    /** Esc unwinds one step: composition first, then the list. */
+    escape() {
+      if (selectedId) { select(null); return true; }
+      if (open) { setOpen(false); return true; }
+      return false;
+    },
+    fit: fitCompose,
   };
 }

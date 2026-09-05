@@ -27,7 +27,7 @@ Open decks any of these ways:
 
 ## Using it
 
-Three regions: a slide **navigator** on the left (⌘\ hides it), the **stage** in the middle, and an **agent panel** on the right (⌘J). One floating pill carries the deck name, the `4 / 18` counter, an **Agent** button (a gold dot and the agent's name while one is connected, a count of edits you have not looked at), **Edit** and **Present**. The foot of the navigator carries the deck's **design system** (⌥⌘D).
+Three regions: a slide **navigator** on the left (⌘\ hides it), the **stage** in the middle, and an **agent panel** on the right (⌘J). One floating pill carries the deck name, the `4 / 18` counter, an **Agent** button (a gold dot and the agent's name while one is connected, a count of edits you have not looked at), **Edit** and **Present**. A **Design** button (⌥⌘D) opens the design systems in the sidebar.
 
 ### Presenting
 
@@ -61,9 +61,11 @@ Drag thumbnails to reorder. Right-click one for New Slide After, Duplicate, Move
 
 ### Design systems (⌥⌘D)
 
-A design system is the deck's visual language as data — type, color, spacing, motion, chart and component preferences — kept outside any one deck so the same look dresses all of them. The button at the foot of the navigator shows the one this deck uses and switches between them; **Design Systems…** opens the manager.
+A design system is the deck's visual language as data — type, color, spacing, motion, chart and component preferences — kept outside any one deck so the same look dresses all of them.
 
-Dek holds **five**. Each carries an append-only version history: every edit becomes a new version, the panel lists them with what changed, and *Restore* brings an old one back as a new version rather than erasing anything. Rename in place, duplicate to try a variant, delete with an inline confirm. When a system moves ahead of the deck it dressed, the button shows `v3+` and the panel offers to re-apply.
+**Design** in the pill is the way in: it turns the left sidebar into the list of systems, each with its palette, its type and its version. Clicking one puts its **composition** on the stage — the guidelines as a single self-contained HTML page, written in the system it documents: the palette as real swatches, type specimens at slide scale, the spacing rhythm, the motion language with its easing curve drawn, the chart defaults, every component rendered live beside its source, and the whole token list. *Save HTML…* writes that page next to the deck, so a system travels as one file.
+
+Dek holds **five**. Each carries an append-only version history: every edit becomes a new version, *History* lists them with what changed, and *Restore* brings an old one back as a new version rather than erasing anything. Apply, duplicate, delete and hand-off-to-Claude-Code all live on the composition's bar. When a system moves ahead of the deck it dressed, the sidebar marks it and the bar offers to re-apply. Esc steps back out: composition, then list, then slides.
 
 Claude Code writes them. Describe the look you want and it builds the token set, applies it, snapshots the result and refines it — each round a version you can roll back. *Capture This Deck's Look* goes the other way: it turns a deck you already like into a system, carrying its fonts, palette, type scale, spacing, transition and components across, plus any custom properties the system itself cannot express, so applying it back leaves the deck exactly as it was.
 
@@ -102,7 +104,7 @@ The app runs a loopback-only HTTP API (bearer token in `~/Library/Application Su
 | Group | Tools |
 | --- | --- |
 | Read | `get_deck` · `get_slide` · `get_source` · `get_elements` · `get_theme` · `list_components` · `get_state` · `get_format_guide` |
-| Design systems | `list_themes` · `list_theme_tokens` · `get_theme_system` · `preview_theme_css` · `create_theme` · `update_theme` · `revert_theme` · `duplicate_theme` · `delete_theme` · `apply_theme` · `remove_theme` · `capture_theme` |
+| Design systems | `list_themes` · `list_theme_tokens` · `get_theme_system` · `preview_theme_css` · `create_theme` · `update_theme` · `revert_theme` · `duplicate_theme` · `delete_theme` · `apply_theme` · `remove_theme` · `capture_theme` · `export_theme` |
 | Look | `snapshot_slide` (PNG of a slide at a fragment step) · `snapshot_overview` (light table) · `snapshot_window` (the app itself, optionally after running a shell command such as `settings`) |
 | Write | `add_slide` · `update_slide` · `delete_slide` · `move_slide` · `duplicate_slide` · `set_notes` · `add_element` · `update_element` · `delete_element` · `set_theme` · `append_style` · `set_head` · `set_title` · `add_component` · `use_component` · `write_deck` · `create_deck` · `open_deck` · `import_deck` |
 | Drive | `goto` · `navigate` · `present` · `overview` |

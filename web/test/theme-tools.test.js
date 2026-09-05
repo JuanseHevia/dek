@@ -29,7 +29,8 @@ function shellTools() {
 
 const THEME_TOOLS = [
   'list_themes', 'list_theme_tokens', 'get_theme_system', 'preview_theme_css', 'create_theme',
-  'update_theme', 'delete_theme', 'duplicate_theme', 'revert_theme', 'apply_theme', 'remove_theme', 'capture_theme',
+  'update_theme', 'delete_theme', 'duplicate_theme', 'revert_theme', 'apply_theme', 'remove_theme',
+  'capture_theme', 'export_theme',
 ];
 
 test('the bridge advertises every design-system tool', () => {
