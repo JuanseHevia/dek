@@ -4,9 +4,11 @@
   "version": "0.1.0",
   "scripts": {
     "build": "node build.mjs",
-    "dev": "node build.mjs --watch"
+    "dev": "node build.mjs --watch",
+    "test": "node --test \"test/*.test.js\""
   },
   "devDependencies": {
     "esbuild": "^0.28.2"
-  }
+  },
+  "type": "module"
 }

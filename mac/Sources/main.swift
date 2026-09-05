@@ -345,6 +345,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         viewMenu.addItem(.separator())
         viewMenu.addItem(item("Slide Navigator", "nav", "\\"))
         viewMenu.addItem(item("Agent Panel", "agent", "j"))
+        viewMenu.addItem(item("Design System", "themes", "d", [.command, .option]))
+        viewMenu.addItem(item("Design Systems…", "themesPanel", "", []))
         viewMenu.addItem(item("Keyboard Shortcuts", "shortcuts", "/"))
         viewMenu.addItem(.separator())
         let fullScreen = NSMenuItem(title: "Toggle Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
@@ -523,6 +525,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             if on != isFull { window.toggleFullScreen(nil) }
         case "presenter":
             if body["open"] as? Bool ?? true { openPresenter() } else { presenterWindow?.orderOut(nil) }
+        case "themesLoad":
+            let content = (try? String(contentsOf: AgentServer.themesURL, encoding: .utf8)) ?? ""
+            callJS(webView, "window.dekShell.themesLoaded(\(AgentServer.jsonString(content)))")
+        case "themesSave":
+            if let content = body["content"] as? String {
+                if !write(AgentServer.themesURL.path, content) { NSLog("dek: could not write the design system library") }
+            }
         case "desktopStatus": sendDesktopStatus()
         case "desktopInstall": configureDesktop(install: true)
         case "desktopRemove": configureDesktop(install: false)
@@ -815,7 +824,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     private func sendAgentInfo() {
-        callJS(webView, "window.dekShell.agentInfo(\(json(["port": Int(agentServer.port), "bridge": bridgePath, "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "0.1.0"])))")
+        let info: [String: Any] = ["port": Int(agentServer.port), "bridge": bridgePath, "themes": AgentServer.themesURL.path,
+                                   "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "0.1.0"]
+        callJS(webView, "window.dekShell.agentInfo(\(json(info)))")
     }
 
     private func sendDesktopStatus() {

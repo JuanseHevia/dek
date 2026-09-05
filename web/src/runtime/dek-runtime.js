@@ -449,6 +449,17 @@
     return (o.prefix || '') + new Intl.NumberFormat(undefined, opts).format(v) + (o.suffix || '');
   }
 
+  // Deck-wide chart preferences (the design system writes them into <meta name="dek-chart">);
+  // anything a figure sets in its own data-chart options still wins.
+  let chartDefaults = null;
+  function deckChartDefaults() {
+    if (chartDefaults) return chartDefaults;
+    const meta = document.querySelector('meta[name="dek-chart"]');
+    try { chartDefaults = meta ? JSON.parse(meta.content || '{}') : {}; } catch (e) { chartDefaults = {}; }
+    if (!chartDefaults || typeof chartDefaults !== 'object') chartDefaults = {};
+    return chartDefaults;
+  }
+
   function renderChart(fig) {
     let spec;
     try { spec = JSON.parse(fig.dataset.chart || '{}'); } catch (e) {
@@ -456,7 +467,7 @@
       return;
     }
     const type = spec.type || 'bar';
-    const o = spec.options || {};
+    const o = Object.assign({}, deckChartDefaults(), spec.options || {});
     const labels = spec.labels || [];
     let series = spec.series || (spec.data ? [{ name: spec.name || '', data: spec.data }] : []);
     series = series.map((s, i) => ({ name: s.name || `Series ${i + 1}`, data: (s.data || []).map(Number), color: (o.colors || [])[i] || s.color }));
@@ -1232,8 +1243,8 @@
     },
     fit,
     zoom() { return S.zoom; },
-    /** Re-render charts (after a CSS hot swap changed their box). */
-    refresh() { for (const fig of $$('.dek-chart')) { fig._dekType = null; renderChart(fig); } updateNumber(); },
+    /** Re-render charts (after a CSS hot swap changed their box or the deck's chart defaults). */
+    refresh() { chartDefaults = null; for (const fig of $$('.dek-chart')) { fig._dekType = null; renderChart(fig); } updateNumber(); },
     ready() { return S.ready; },
   };
 

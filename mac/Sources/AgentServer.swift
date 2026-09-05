@@ -66,6 +66,9 @@ final class AgentServer {
 
     static var stateURL: URL { supportDir.appendingPathComponent("agent.json") }
 
+    /// The design-system library: one JSON file shared by every deck.
+    static var themesURL: URL { supportDir.appendingPathComponent("design-systems.json") }
+
     static var snapshotDir: URL {
         let dir = supportDir.appendingPathComponent("snapshots", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
