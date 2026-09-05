@@ -27,7 +27,7 @@ Open decks any of these ways:
 
 ## Using it
 
-Three regions: a slide **navigator** on the left (⌘\ hides it), the **stage** in the middle, and an **agent panel** on the right (⌘J). One floating pill carries the deck name, the `4 / 18` counter, an **Agent** button (a gold dot and the agent's name while one is connected, a count of edits you have not looked at), **Edit** and **Present**.
+Three regions: a slide **navigator** on the left (⌘\ hides it), the **stage** in the middle, and an **agent panel** on the right (⌘J). One floating pill carries the deck name, the `4 / 18` counter, an **Agent** button (a gold dot and the agent's name while one is connected, a count of edits you have not looked at), **Edit** and **Present**. The foot of the navigator carries the deck's **design system** (⌥⌘D).
 
 ### Presenting
 
@@ -59,6 +59,16 @@ Dek watches the deck file. When it changes on disk (agent, editor, git checkout)
 
 Drag thumbnails to reorder. Right-click one for New Slide After, Duplicate, Move Up/Down, Copy Slide HTML, Copy Slide ID, Present From Here, Skip Slide (kept in the file, dimmed in the navigator, jumped over while presenting), Delete. Also ⇧⌘N (new slide), ⌘D (duplicate), ⌘⌫ (delete), ⌥⌘↑/↓ (move). All of it writes the file immediately; ⌘Z undoes.
 
+### Design systems (⌥⌘D)
+
+A design system is the deck's visual language as data — type, color, spacing, motion, chart and component preferences — kept outside any one deck so the same look dresses all of them. The button at the foot of the navigator shows the one this deck uses and switches between them; **Design Systems…** opens the manager.
+
+Dek holds **five**. Each carries an append-only version history: every edit becomes a new version, the panel lists them with what changed, and *Restore* brings an old one back as a new version rather than erasing anything. Rename in place, duplicate to try a variant, delete with an inline confirm. When a system moves ahead of the deck it dressed, the button shows `v3+` and the panel offers to re-apply.
+
+Claude Code writes them. Describe the look you want and it builds the token set, applies it, snapshots the result and refines it — each round a version you can roll back. *Capture This Deck's Look* goes the other way: it turns a deck you already like into a system, carrying its fonts, palette, type scale, spacing, transition and components across, plus any custom properties the system itself cannot express, so applying it back leaves the deck exactly as it was.
+
+Applying one writes a single `<style id="dek-theme">` block, the transition and chart `<meta>`s, the components the system owns, and a `dek-theme` marker; the rest of the file is untouched and ⌘Z undoes it. The library lives in `~/Library/Application Support/Dek/design-systems.json`.
+
 ### Edit mode (⌘E or `e`)
 
 For the basics a human wants to fix by hand. Click an element to select it (headings, paragraphs, lists, images, charts, components), drag to move (Dek writes a CSS `translate`, so the layout stays intact), pull the corner handle to resize, ⌫ to delete, arrows to nudge (⇧ for 10px). Double-click or ⏎ edits text in place; the floating toolbar switches the type (H1 / H2 / H3 / Text), bold, italic, alignment and size. The bar at the bottom inserts a heading, a text box, or an image (⌥⌘H / ⌥⌘T / ⌥⌘I). Dropping an image file on the window inserts it too. Images are copied into an `assets/` folder next to the deck so the deck stays portable.
@@ -83,7 +93,7 @@ Read [docs/DECK_FORMAT.md](docs/DECK_FORMAT.md). The short version:
 </section>
 ```
 
-The runtime ships fragments (with variants), slide transitions (fade · slide · rise · zoom · flip), auto-animate between slides sharing `data-id` elements, thirteen enter animations with delay and stagger, animated counters and typewriters, SVG charts from JSON (bar · line · area · donut · pie, themed through `--dek-c1…c6`), CSS 3D helpers (cube, orbit, pointer tilt), components (`<template data-dek-component>` with live `data-dek-use` instances and `{{vars}}`), and theme variables on `:root`. Decks may include any script (Three.js, D3) too.
+The runtime ships fragments (with variants), slide transitions (fade · slide · rise · zoom · flip), auto-animate between slides sharing `data-id` elements, thirteen enter animations with delay and stagger, animated counters and typewriters, SVG charts from JSON (bar · line · area · donut · pie, themed through `--dek-c1…c6`), CSS 3D helpers (cube, orbit, pointer tilt), components (`<template data-dek-component>` with live `data-dek-use` instances and `{{vars}}`), theme variables on `:root`, and deck-wide chart defaults from `<meta name="dek-chart">`. Decks may include any script (Three.js, D3) too.
 
 ## Agents · MCP
 
@@ -92,11 +102,12 @@ The app runs a loopback-only HTTP API (bearer token in `~/Library/Application Su
 | Group | Tools |
 | --- | --- |
 | Read | `get_deck` · `get_slide` · `get_source` · `get_elements` · `get_theme` · `list_components` · `get_state` · `get_format_guide` |
+| Design systems | `list_themes` · `list_theme_tokens` · `get_theme_system` · `preview_theme_css` · `create_theme` · `update_theme` · `revert_theme` · `duplicate_theme` · `delete_theme` · `apply_theme` · `remove_theme` · `capture_theme` |
 | Look | `snapshot_slide` (PNG of a slide at a fragment step) · `snapshot_overview` (light table) · `snapshot_window` (the app itself, optionally after running a shell command such as `settings`) |
 | Write | `add_slide` · `update_slide` · `delete_slide` · `move_slide` · `duplicate_slide` · `set_notes` · `add_element` · `update_element` · `delete_element` · `set_theme` · `append_style` · `set_head` · `set_title` · `add_component` · `use_component` · `write_deck` · `create_deck` · `open_deck` · `import_deck` |
 | Drive | `goto` · `navigate` · `present` · `overview` |
 
-Writes go through the app, land in the file before the tool returns, preserve the rest of the file byte-for-byte, show up in the Agent panel, and are undoable with ⌘Z. Snapshots come back as images in the tool result so the agent sees exactly what the audience sees. The format guide is also an MCP resource (`dek://format-guide`), and two prompts ship with the server: `build-deck` and `polish-deck`.
+Writes go through the app, land in the file before the tool returns, preserve the rest of the file byte-for-byte, show up in the Agent panel, and are undoable with ⌘Z. Snapshots come back as images in the tool result so the agent sees exactly what the audience sees. The format guide is also an MCP resource (`dek://format-guide`), and three prompts ship with the server: `build-deck`, `design-system` and `polish-deck`.
 
 **Setup.** Settings → Agents shows the exact command; for a checkout of this repo:
 
@@ -114,10 +125,11 @@ mac/      Swift AppKit shell: window, menus, file I/O, watcher, presenter window
 mcp/      dek-mcp.js, the stdio MCP bridge
 decks/    Welcome.html, the tour deck    templates/  blank.html, used by ⌘N and create_deck
 docs/     DECK_FORMAT.md, the agent-facing format guide (also served as get_format_guide)
+web/test/ node:test suites for the deck model and the design systems (`npm test` in web/)
 build.sh  web bundle + swiftc (universal) + .app assembly (ad-hoc signed)
 ```
 
-`PRODUCT.md` and `DESIGN.md` hold the brief the interface follows. For web-only work, `npm run dev` inside `web/` watches and rebuilds; `.claude/launch.json` serves `web/` at `localhost:8742` with a dev harness that loads `decks/Welcome.html`.
+`PRODUCT.md` and `DESIGN.md` hold the brief the interface follows. `npm test` inside `web/` runs the suites (no dependencies beyond Node). For web-only work, `npm run dev` inside `web/` watches and rebuilds; `.claude/launch.json` serves `web/` at `localhost:8742` with a dev harness that loads `decks/Welcome.html`.
 
 ## Reviews
 

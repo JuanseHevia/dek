@@ -16,6 +16,13 @@
       </div>
       <div id="thumbs" class="thumbs" role="listbox" aria-label="Slides"></div>
       <div class="nav-foot">
+        <button id="themebtn" class="themebtn" title="Design system (⌥⌘D)" aria-haspopup="menu">
+          <span id="themeswatch" class="theme-swatch" aria-hidden="true"></span>
+          <span id="themename" class="theme-name">No design system</span>
+          <span id="themeversion" class="theme-version"></span>
+          <svg class="theme-chev" width="9" height="6" viewBox="0 0 9 6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4.2 4.5 1 8 4.2"/></svg>
+        </button>
+        <div class="nav-actions">
         <button id="addslide" class="navbtn" title="New slide after the current one (⇧⌘N)">
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M6 1.5v9M1.5 6h9"/></svg>
           Slide
@@ -27,6 +34,7 @@
             <path d="M7.5 1.6v1.7M7.5 11.7v1.7M1.6 7.5h1.7M11.7 7.5h1.7M3.3 3.3l1.2 1.2M10.5 10.5l1.2 1.2M11.7 3.3l-1.2 1.2M4.5 10.5l-1.2 1.2"/>
           </svg>
         </button>
+        </div>
       </div>
     </aside>
 
@@ -70,6 +78,23 @@
       <div id="overview" class="overview" hidden aria-label="Light table">
         <div id="ovgrid" class="ovgrid" role="listbox"></div>
       </div>
+
+      <section id="themes" class="settings themes" hidden aria-label="Design systems">
+        <div class="settings-inner wide">
+          <div class="settings-head">
+            <h1>Design systems</h1>
+            <span id="themescount" class="set-val"></span>
+            <button id="themesclose" class="setbtn" title="Close (Esc)">Done</button>
+          </div>
+          <p class="set-note">A design system is a deck's visual language — type, color, spacing, motion, chart and component preferences — kept outside any one deck so the same look can dress all of them. Every edit is a new version you can roll back to. Claude Code writes them: describe the look you want and it builds, refines and applies the system over MCP.</p>
+          <div id="themeslist" class="theme-list"></div>
+          <p id="themesempty" class="theme-empty" hidden>Nothing here yet. Capture the look this deck already has, or ask Claude Code to design one with you.</p>
+          <div class="set-row">
+            <button id="themesnew" class="setbtn">Capture This Deck's Look</button>
+            <button id="themesask" class="setbtn">Ask Claude Code For One</button>
+          </div>
+        </div>
+      </section>
 
       <section id="settings" class="settings" hidden aria-label="Settings">
         <div class="settings-inner">
@@ -199,6 +224,7 @@
   </div>
 
   <div id="ctxmenu" class="ctxmenu" hidden role="menu"></div>
+  <div id="thememenu" class="ctxmenu thememenu" hidden role="menu" aria-label="Design systems"></div>
 
   <div id="shortcuts" class="shortcuts" hidden role="dialog" aria-label="Keyboard shortcuts">
     <div class="shortcuts-card">
@@ -241,6 +267,7 @@
           <dd><kbd>⌘K</kbd> <kbd>⇧⌘P</kbd><span>command palette</span></dd>
           <dd><kbd>⌘\</kbd><span>slide navigator</span></dd>
           <dd><kbd>⌘J</kbd><span>agent panel ✦</span></dd>
+          <dd><kbd>⌥⌘D</kbd><span>design system</span></dd>
           <dd><kbd>⌘,</kbd><span>settings</span></dd>
           <dd><kbd>⌘/</kbd> <kbd>?</kbd><span>these shortcuts</span></dd>
         </dl>

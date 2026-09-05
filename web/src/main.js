@@ -2,11 +2,19 @@ import { send, isNative } from './bridge.js';
 import {
   parseDeck, insertSlide, replaceSlide, removeSlide, moveSlide, normalizeSection, withNewId, sectionId,
   setNotes, setSlideAttrs, addElement, updateElement, deleteElement, getElements,
-  setHeadInner, appendStyle, setTitle, resolveSlide, structure, scanTags, retagElement,
+  setHeadInner, appendStyle, setTitle, resolveSlide, structure, retagElement,
+  componentRanges, fillVars,
 } from './deck.js';
 import { Stage, Thumbs, buildDocument } from './stage.js';
 import { createPalette } from './palette.js';
 import { detectForeign, importForeign, importTitle } from './import.js';
+import {
+  MAX_THEMES, TOKEN_GUIDE, DEFAULT_SYSTEM, normalizeLibrary, emptyLibrary, createTheme, updateTheme,
+  deleteTheme, duplicateTheme, revertTheme, findTheme, currentSystem, currentVersion, themeSummary,
+  normalizeSystem, applyThemeToRaw, removeThemeFromRaw, readDeckTheme, captureSystem, deckOwnedComponents,
+  compileSystemCss, chartDefaults, missingVars,
+} from './theme.js';
+import { createThemesUI } from './themes-ui.js';
 import FORMAT_GUIDE from '../../docs/DECK_FORMAT.md';
 import BLANK_TEMPLATE from '../../templates/blank.html';
 
@@ -29,6 +37,9 @@ const els = {
   guidebtn: $('guidebtn'), version: $('version'),
   agent: $('agent'), agentlist: $('agentlist'), agentempty: $('agentempty'), agentconn: $('agentconn'),
   ctxmenu: $('ctxmenu'), shortcuts: $('shortcuts'),
+  themebtn: $('themebtn'), themeswatch: $('themeswatch'), themename: $('themename'), themeversion: $('themeversion'),
+  thememenu: $('thememenu'), themes: $('themes'), themeslist: $('themeslist'), themesempty: $('themesempty'),
+  themescount: $('themescount'), themesclose: $('themesclose'), themesnew: $('themesnew'), themesask: $('themesask'),
   quickopen: $('quickopen'), qoinput: $('qoinput'), qolist: $('qolist'), qoempty: $('qoempty'),
   toast: $('toast'),
   presenter: $('presenter'), pvframe: $('pvframe'), pvnext: $('pvnext'), pvnextbox: $('pvnextbox'), pvend: $('pvend'),
@@ -76,6 +87,8 @@ const state = {
   pendingExternal: null,
   history: { past: [], future: [] },
   mcp: { port: null, bridge: null, desktop: null },
+  themes: emptyLibrary(),   // the design-system library, mirrored from disk
+  themesPath: null,         // where the shell writes it back
   agent: { log: [], unseen: 0, lastAuthor: null, lastSeen: 0 },
   inRpc: false,
   rpcWrites: [],
@@ -117,6 +130,8 @@ function baseHrefFor(path) {
 }
 
 const model = () => (state.deck ? state.deck.model : null);
+let themesUI = null;  // the design-system chrome, built once the deck helpers exist
+function themesPanelOpen() { return !!themesUI && themesUI.panelOpen(); }
 const slideCount = () => (state.deck ? state.deck.model.slides.length : 0);
 function needDeck() {
   if (!state.deck) throw new Error('No deck is open in Dek. Use open_deck with an absolute path, or create_deck.');
@@ -316,7 +331,8 @@ function updateChrome() {
   els.deckname.title = state.deck ? state.deck.path : '';
   els.counter.textContent = n ? `${state.index + 1} / ${n}` : '– / –';
   els.navcount.textContent = n ? String(n) : '';
-  els.empty.classList.toggle('show', !state.deck && !state.settingsOpen && !PRESENTER_MODE);
+  els.empty.classList.toggle('show', !state.deck && !state.settingsOpen && !themesPanelOpen() && !PRESENTER_MODE);
+  renderThemes();
   els.frame.hidden = !state.deck;
   els.presentbtn.disabled = !n;
   const path = state.deck ? state.deck.path : null;
@@ -397,6 +413,8 @@ function setPresenting(on, o = {}) {
     setEditing(false);
     setOverview(false);
     setSettingsOpen(false);
+    setThemesPanelOpen(false);
+    themesUI.closeMenu();
     closeContextMenu();
     setShortcutsOpen(false);
     palette.close();
@@ -604,12 +622,13 @@ els.insertbar.addEventListener('click', (e) => {
 });
 els.editbtn.addEventListener('click', () => setEditing(!state.editing));
 window.addEventListener('resize', placeEltools);
+window.addEventListener('resize', () => themesUI && themesUI.closeMenu());
 
 // ---------- overview (light table) ----------
 
 function setOverview(on) {
   if (on === state.overview) return;
-  if (on) setEditing(false);
+  if (on) { setEditing(false); setThemesPanelOpen(false); }
   state.overview = on;
   els.overview.hidden = !on;
   document.body.classList.toggle('overview-open', on);
@@ -734,7 +753,7 @@ function setAgentOpen(open) {
 }
 
 function setSettingsOpen(open) {
-  if (open) setEditing(false);
+  if (open) { setEditing(false); setThemesPanelOpen(false); }
   state.settingsOpen = open;
   els.settings.hidden = !open;
   els.settingsbtn.classList.toggle('active', open);
@@ -847,6 +866,157 @@ els.copycmd.addEventListener('click', () => {
   });
 });
 
+// ---------- design systems ----------
+
+// The library lives outside every deck (the app's support folder) so one
+// system can dress them all; a deck only records which system and which
+// version of it was last applied.
+
+const themeList = () => state.themes.themes;
+
+/** The system on the open deck, plus whether the library has moved past it. */
+function activeTheme() {
+  const m = model();
+  if (!m) return null;
+  const mark = readDeckTheme(m.raw);
+  if (!mark) return null;
+  const theme = findTheme(state.themes, mark.id);
+  if (!theme) return null;
+  return { theme, appliedVersion: mark.version, stale: currentVersion(theme) > mark.version };
+}
+
+function persistThemes() {
+  const content = JSON.stringify(state.themes, null, 2);
+  // inside an agent call the shell hands writes to the app so the file is on
+  // disk before the agent gets its answer; otherwise post it straight over
+  if (state.inRpc && state.themesPath) state.rpcWrites.push({ path: state.themesPath, content });
+  else send({ type: 'themesSave', content });
+}
+
+function setLibrary(library) {
+  state.themes = library;
+  persistThemes();
+  renderThemes();
+}
+
+function renderThemes() { if (themesUI) themesUI.render(); }
+
+function needTheme(id) {
+  const theme = findTheme(state.themes, id);
+  if (!theme) throw new Error(`No design system "${id}". list_themes shows what exists.`);
+  return theme;
+}
+
+function versionOf(theme, version) {
+  const entry = theme.versions.find((v) => v.v === (version | 0));
+  if (!entry) throw new Error(`“${theme.name}” has no version ${version}; it has ${theme.versions.map((v) => v.v).join(', ')}.`);
+  return entry;
+}
+
+function applyThemeToDeck(id, o = {}) {
+  const m = needDeck();
+  const theme = needTheme(id);
+  // variables the deck's own CSS reads that this system will not define
+  const orphans = missingVars(m.raw, currentSystem(theme));
+  const changed = applyRaw(applyThemeToRaw(m.raw, theme), { label: `design system: ${theme.name}` });
+  renderThemes();
+  if (!o.quiet) {
+    if (changed && orphans.length) toast(`${theme.name} applied · ${orphans.length} variable${orphans.length === 1 ? '' : 's'} this deck uses (${orphans.slice(0, 3).join(', ')}) are not in it`, '⌘Z');
+    else toast(changed ? `${theme.name} v${currentVersion(theme)} applied` : `${theme.name} is already on this deck`, changed ? '⌘Z' : '');
+  }
+  return { id: theme.id, name: theme.name, version: currentVersion(theme), changed, missing_vars: orphans };
+}
+
+function detachTheme(o = {}) {
+  const m = needDeck();
+  const was = activeTheme();
+  const changed = applyRaw(removeThemeFromRaw(m.raw), { label: 'remove design system' });
+  renderThemes();
+  if (!o.quiet) toast(changed ? `${was ? was.theme.name : 'Design system'} removed from this deck` : 'This deck has no design system', changed ? '⌘Z' : '');
+  return { removed: was ? was.theme.id : null, changed };
+}
+
+/** Start a system from the look a deck already has: its :root tokens, fonts and components. */
+function captureThemeFromDeck(o = {}) {
+  const m = needDeck();
+  const system = captureSystem(m.raw);
+  system.components = deckOwnedComponents(m.raw);
+  const name = o.name || (m.meta.title || state.deck.name.replace(/\.html?$/i, '')).slice(0, 40);
+  const { library, theme } = createTheme(state.themes, {
+    name,
+    description: o.description || `Captured from ${state.deck.name}`,
+    system,
+    note: `captured from ${state.deck.name}`,
+  });
+  setLibrary(library);
+  return theme;
+}
+
+/** Hand the conversation back to Claude Code with a prompt that already has the context. */
+function askClaudeForTheme(id) {
+  const theme = id ? findTheme(state.themes, id) : null;
+  const prompt = theme
+    ? `In Dek, let's work on the design system "${theme.name}" (id: ${theme.id}). Read it with get_theme_system, show me what it does today, then change it with update_theme and apply_theme and check the result with snapshot_slide. What I want to change: `
+    : `In Dek, design a visual system for my slides with me. Call list_theme_tokens to see every token you can set and get_theme to see what this deck does today, then create_theme, apply_theme, and snapshot_slide to check your work. The look I am after: `;
+  navigator.clipboard.writeText(prompt).then(
+    () => toast('Prompt copied — paste it into Claude Code', '⌘V'),
+    () => toast('Ask Claude Code to design a system for you'),
+  );
+  setAgentOpen(true);
+}
+
+themesUI = createThemesUI({
+  els,
+  actions: {
+    list: themeList,
+    active: activeTheme,
+    apply: (id) => { try { applyThemeToDeck(id); } catch (e) { toast(e.message || String(e)); } },
+    detach: () => { try { detachTheme(); } catch (e) { toast(e.message || String(e)); } },
+    remove: (id) => {
+      try {
+        const { library, theme } = deleteTheme(state.themes, id);
+        setLibrary(library);
+        toast(`Deleted “${theme.name}”`);
+      } catch (e) { toast(e.message || String(e)); }
+    },
+    rename: (id, patch) => {
+      const theme = findTheme(state.themes, id);
+      if (!theme) return;
+      if (patch.name !== undefined && patch.name.trim() === theme.name) return;
+      if (patch.description !== undefined && patch.description === theme.description) return;
+      try { setLibrary(updateTheme(state.themes, id, patch).library); } catch (e) { toast(e.message || String(e)); }
+    },
+    revert: (id, version) => {
+      try {
+        const { library, theme } = revertTheme(state.themes, id, version);
+        setLibrary(library);
+        toast(`“${theme.name}” restored to v${version} as v${currentVersion(theme)}`);
+      } catch (e) { toast(e.message || String(e)); }
+    },
+    duplicate: (id) => {
+      try {
+        const { library, theme } = duplicateTheme(state.themes, id);
+        setLibrary(library);
+        toast(`Copied to “${theme.name}”`);
+      } catch (e) { toast(e.message || String(e)); }
+    },
+    capture: () => {
+      try {
+        const theme = captureThemeFromDeck();
+        toast(`Saved “${theme.name}” — apply it from the design system menu`);
+      } catch (e) { toast(e.message || String(e)); }
+    },
+    ask: (id) => askClaudeForTheme(id),
+  },
+});
+
+function setThemesPanelOpen(open) {
+  if (open) { setSettingsOpen(false); setOverview(false); setEditing(false); }
+  themesUI.setPanelOpen(open);
+  updateChrome();
+  if (!open) stage.focus();
+}
+
 // ---------- agent panel ----------
 
 function agentLog(entry) {
@@ -922,6 +1092,10 @@ const COMMANDS = () => [
   { label: 'Export PDF…', hint: '', run: () => send({ type: 'exportPdf' }) },
   { label: 'Toggle Slide Navigator', hint: '⌘\\', run: () => setNavOpen(!state.navOpen) },
   { label: 'Toggle Agent Panel', hint: '⌘J', run: () => setAgentOpen(!state.agentOpen) },
+  ...themeList().map((t) => ({ label: `Design System: ${t.name}`, hint: `v${currentVersion(t)}`, run: () => { try { applyThemeToDeck(t.id); } catch (e) { toast(e.message || String(e)); } } })),
+  { label: 'Design Systems…', hint: '⌥⌘D', run: () => setThemesPanelOpen(true) },
+  { label: 'Remove Design System From Deck', hint: '', run: () => { try { detachTheme(); } catch (e) { toast(e.message || String(e)); } } },
+  { label: 'Capture This Deck’s Look as a Design System', hint: '', run: () => { try { const t = captureThemeFromDeck(); toast(`Saved “${t.name}” — apply it from the design system menu`); } catch (e) { toast(e.message || String(e)); } } },
   { label: 'Settings…', hint: '⌘,', run: () => setSettingsOpen(!state.settingsOpen) },
   { label: 'Keyboard Shortcuts', hint: '⌘/', run: () => setShortcutsOpen(els.shortcuts.hidden) },
   { label: 'Chrome: Stage (dark)', hint: '', run: () => applyTheme('dark') },
@@ -941,6 +1115,8 @@ const palette = createPalette({
 
 function escapeKey() {
   if (!els.ctxmenu.hidden) { closeContextMenu(); return true; }
+  if (themesUI.menuOpen()) { themesUI.closeMenu(); return true; }
+  if (themesPanelOpen()) { setThemesPanelOpen(false); return true; }
   if (palette.isOpen()) { palette.close(); return true; }
   if (!els.shortcuts.hidden) { setShortcutsOpen(false); return true; }
   if (state.settingsOpen) { setSettingsOpen(false); return true; }
@@ -963,6 +1139,7 @@ const CMD_KEYS = (e) => {
   if (e.altKey && k === 't') return 'insertText';
   if (e.altKey && k === 'h') return 'insertHeading';
   if (e.altKey && k === 'i') return 'insertImage';
+  if (e.altKey && k === 'd') return 'themes';
   if (e.altKey) return null;
   const table = {
     'k': 'palette', 'p': e.shiftKey ? 'palette' : 'goto', '\\': 'nav', 'j': 'agent', ',': 'settings', '/': 'shortcuts',
@@ -1031,6 +1208,8 @@ function command(name, arg) {
     case 'nav': setNavOpen(!state.navOpen); break;
     case 'agent': setAgentOpen(!state.agentOpen); break;
     case 'settings': setSettingsOpen(!state.settingsOpen); break;
+    case 'themes': themesUI.toggle(); break;
+    case 'themesPanel': setThemesPanelOpen(!themesPanelOpen()); break;
     case 'shortcuts': setShortcutsOpen(els.shortcuts.hidden); break;
     case 'reload': send({ type: 'reload' }); break;
     case 'duplicate': if (state.deck) duplicateSlide(state.index); break;
@@ -1085,7 +1264,8 @@ function themeVars(m) {
   return vars;
 }
 
-function themeSummary(m) {
+/** The raw CSS-level look of the open deck (what get_theme reports). */
+function deckStyleSummary(m) {
   const vars = themeVars(m);
   const css = structure(m.raw).styles.map((r) => m.raw.slice(r.start, r.end)).join('\n');
   const fonts = Array.from(new Set((css.match(/font-family\s*:\s*([^;}]+)/g) || []).map((f) => f.replace(/font-family\s*:\s*/, '').trim())));
@@ -1094,24 +1274,6 @@ function themeSummary(m) {
   return { vars, fonts, colors, stylesheets: links, styleBlocks: structure(m.raw).styles.length };
 }
 
-function componentRanges(m) {
-  const out = [];
-  let open = null;
-  scanTags(m.raw, (t) => {
-    if (t.name !== 'template') return;
-    if (!t.closing) { const nm = /data-dek-component\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(t.attrs); if (nm) open = { name: nm[1] || nm[2], start: t.start, inner: t.end, attrs: t.attrs }; }
-    else if (open) { out.push({ ...open, end: t.end, innerEnd: t.start }); open = null; }
-  });
-  return out.map((c) => {
-    const desc = /data-description\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(c.attrs);
-    const html = m.raw.slice(c.inner, c.innerEnd);
-    return { name: c.name, description: desc ? (desc[1] || desc[2]) : '', html, start: c.start, end: c.end, vars: Array.from(new Set(Array.from(html.matchAll(/\{\{\s*([\w-]+)\s*\}\}/g)).map((x) => x[1]))) };
-  });
-}
-
-function fillVars(html, vars) {
-  return html.replace(/\{\{\s*([\w-]+)\s*\}\}/g, (_, k) => (vars && vars[k] !== undefined ? String(vars[k]) : ''));
-}
 
 function slideRef(args) {
   const m = needDeck();
@@ -1131,7 +1293,7 @@ const TOOLS = {
     return { result: {
       path: state.deck.path, name: state.deck.name, title: m.meta.title, size: m.meta.size,
       transition: m.meta.transition || settings.transition, count: m.slides.length, current: state.index + 1,
-      slides: m.slides.map(slideSummary), components: componentRanges(m).map((c) => ({ name: c.name, description: c.description, vars: c.vars })),
+      slides: m.slides.map(slideSummary), components: componentRanges(m.raw).map((c) => ({ name: c.name, description: c.description, vars: c.vars })),
       theme: themeVars(m), presenting: state.presenting,
     } };
   },
@@ -1156,7 +1318,7 @@ const TOOLS = {
     const m = needDeck();
     let html = a.html;
     if (a.component) {
-      const c = componentRanges(m).find((x) => x.name === a.component);
+      const c = componentRanges(m.raw).find((x) => x.name === a.component);
       if (!c) throw new Error(`No component "${a.component}"`);
       html = fillVars(c.html, a.vars);
     }
@@ -1251,7 +1413,7 @@ const TOOLS = {
     applyRaw(a.html, { label: 'agent: rewrite deck' });
     return { result: { count: slideCount() }, summary: 'rewrote the whole deck' };
   },
-  get_theme() { return { result: themeSummary(needDeck()) }; },
+  get_theme() { return { result: deckStyleSummary(needDeck()) }; },
   set_theme(a) {
     const m = needDeck();
     if (!a.vars || typeof a.vars !== 'object') throw new Error('vars ({"--name": "value"}) is required');
@@ -1264,12 +1426,106 @@ const TOOLS = {
     applyRaw(appendStyle(m, css, 'dek-theme'), { label: 'agent: theme' });
     return { result: { vars: merged }, summary: `set ${Object.keys(a.vars).length} theme variable${Object.keys(a.vars).length === 1 ? '' : 's'}` };
   },
-  list_components() { return { result: componentRanges(needDeck()).map((c) => ({ name: c.name, description: c.description, vars: c.vars, html: c.html })) }; },
+  // ---- design systems ----
+  list_themes() {
+    const active = activeTheme();
+    return { result: {
+      themes: themeList().map(themeSummary),
+      active: active ? { id: active.theme.id, name: active.theme.name, applied_version: active.appliedVersion, current_version: currentVersion(active.theme), stale: active.stale } : null,
+      slots: { used: themeList().length, max: MAX_THEMES },
+      deck: state.deck ? state.deck.path : null,
+    } };
+  },
+  list_theme_tokens() {
+    return { result: { guide: TOKEN_GUIDE, defaults: DEFAULT_SYSTEM, max_systems: MAX_THEMES } };
+  },
+  get_theme_system(a) {
+    const theme = a.id ? needTheme(a.id) : (activeTheme() || {}).theme;
+    if (!theme) throw new Error('This deck has no design system. Pass an id, or call list_themes.');
+    return { result: {
+      id: theme.id, name: theme.name, description: theme.description,
+      version: currentVersion(theme), created_at: theme.createdAt, updated_at: theme.updatedAt,
+      history: theme.versions.map((v) => ({ version: v.v, at: v.at, note: v.note })),
+      system: a.version ? versionOf(theme, a.version).system : currentSystem(theme),
+    } };
+  },
+  preview_theme_css(a) {
+    let system = a.system ? normalizeSystem(a.system) : null;
+    if (!system) {
+      const theme = a.id ? needTheme(a.id) : (activeTheme() || {}).theme;
+      if (!theme) throw new Error('Pass id or system, or apply a design system to this deck first.');
+      system = a.version ? versionOf(theme, a.version).system : currentSystem(theme);
+    }
+    return { result: { css: compileSystemCss(system), chart_defaults: chartDefaults(system) } };
+  },
+  create_theme(a) {
+    if (!a.name) throw new Error('name is required');
+    const { library, theme } = createTheme(state.themes, { name: a.name, description: a.description, system: a.system, note: a.note || 'created' });
+    setLibrary(library);
+    const applied = a.apply !== false && state.deck ? applyThemeToDeck(theme.id, { quiet: true }) : null;
+    return {
+      result: { id: theme.id, name: theme.name, version: 1, applied: !!applied, slots_left: MAX_THEMES - library.themes.length },
+      summary: `created the design system “${theme.name}”${applied ? ' and applied it' : ''}`,
+    };
+  },
+  update_theme(a) {
+    if (!a.id) throw new Error('id is required (list_themes shows them)');
+    needTheme(a.id);
+    const { library, theme } = updateTheme(state.themes, a.id, {
+      system: a.system, replace: !!a.replace, name: a.name, description: a.description, note: a.note,
+    });
+    setLibrary(library);
+    const wasActive = (activeTheme() || {}).theme;
+    const applied = a.apply !== false && state.deck && wasActive && wasActive.id === theme.id ? applyThemeToDeck(theme.id, { quiet: true }) : null;
+    return {
+      result: { id: theme.id, version: currentVersion(theme), versions: theme.versions.length, applied: !!applied },
+      summary: `updated “${theme.name}” to v${currentVersion(theme)}${applied ? ' and re-applied it' : ''}`,
+    };
+  },
+  delete_theme(a) {
+    if (!a.id) throw new Error('id is required');
+    const { library, theme } = deleteTheme(state.themes, a.id);
+    setLibrary(library);
+    return { result: { deleted: theme.id, slots_left: MAX_THEMES - library.themes.length }, summary: `deleted the design system “${theme.name}”` };
+  },
+  duplicate_theme(a) {
+    if (!a.id) throw new Error('id is required');
+    const { library, theme } = duplicateTheme(state.themes, a.id, a.name);
+    setLibrary(library);
+    return { result: { id: theme.id, name: theme.name }, summary: `copied “${a.id}” to “${theme.name}”` };
+  },
+  revert_theme(a) {
+    if (!a.id || a.version === undefined) throw new Error('id and version are required');
+    const { library, theme } = revertTheme(state.themes, a.id, a.version);
+    setLibrary(library);
+    const wasActive = (activeTheme() || {}).theme;
+    if (a.apply !== false && state.deck && wasActive && wasActive.id === theme.id) applyThemeToDeck(theme.id, { quiet: true });
+    return { result: { id: theme.id, version: currentVersion(theme), restored: a.version | 0 }, summary: `restored “${theme.name}” to v${a.version} (now v${currentVersion(theme)})` };
+  },
+  apply_theme(a) {
+    const id = a.id || (activeTheme() || {}).theme?.id;
+    if (!id) throw new Error('id is required (list_themes shows them)');
+    const r = applyThemeToDeck(id, { quiet: true });
+    if (r.missing_vars.length) r.note = `This deck's CSS reads ${r.missing_vars.length} custom propert${r.missing_vars.length === 1 ? 'y' : 'ies'} the system does not define (${r.missing_vars.join(', ')}); those rules will not resolve. Either rewrite them against the system's tokens or add the values to the system's \`css\`.`;
+    return { result: r, summary: `applied “${r.name}” v${r.version} to the deck${r.missing_vars.length ? ` (${r.missing_vars.length} unresolved variable${r.missing_vars.length === 1 ? '' : 's'})` : ''}` };
+  },
+  remove_theme() {
+    const r = detachTheme({ quiet: true });
+    return { result: r, summary: r.changed ? 'removed the design system from the deck' : 'the deck had no design system' };
+  },
+  capture_theme(a) {
+    const theme = captureThemeFromDeck({ name: a.name, description: a.description });
+    return {
+      result: { id: theme.id, name: theme.name, system: currentSystem(theme), slots_left: MAX_THEMES - state.themes.themes.length },
+      summary: `captured this deck’s look as the design system “${theme.name}”`,
+    };
+  },
+  list_components() { return { result: componentRanges(needDeck().raw).map((c) => ({ name: c.name, description: c.description, vars: c.vars, html: c.html })) }; },
   add_component(a) {
     const m = needDeck();
     if (!a.name || !a.html) throw new Error('name and html are required');
     const tag = `<template data-dek-component="${esc(a.name)}"${a.description ? ` data-description="${esc(a.description)}"` : ''}>\n${String(a.html).trim()}\n</template>`;
-    const existing = componentRanges(m).find((c) => c.name === a.name);
+    const existing = componentRanges(m.raw).find((c) => c.name === a.name);
     let raw;
     if (existing) raw = m.raw.slice(0, existing.start) + tag + m.raw.slice(existing.end);
     else if (m.slides.length) raw = m.raw.slice(0, m.slides[0].start) + tag + '\n\n' + m.raw.slice(m.slides[0].start);
@@ -1280,7 +1536,7 @@ const TOOLS = {
   use_component(a) {
     const i = slideRef(a);
     const m = needDeck();
-    const c = componentRanges(m).find((x) => x.name === a.name);
+    const c = componentRanges(m.raw).find((x) => x.name === a.name);
     if (!c) throw new Error(`No component "${a.name}". list_components shows what exists.`);
     const html = a.live
       ? `<div data-dek-use="${esc(a.name)}" data-vars='${esc(JSON.stringify(a.vars || {})).replace(/'/g, '&#39;')}'></div>`
@@ -1575,7 +1831,16 @@ window.dekShell = {
     state.mcp.port = info.port || null;
     state.mcp.bridge = info.bridge || null;
     state.mcp.version = info.version || null;
+    state.themesPath = isNative ? (info.themes || null) : null;
     renderMcp();
+  },
+  /** The design-system library as it is on disk (or "" the first time). */
+  themesLoaded(content) {
+    let parsed = null;
+    try { parsed = typeof content === 'string' ? (content.trim() ? JSON.parse(content) : null) : content; }
+    catch (e) { toast('The design system library could not be read; starting a fresh one'); }
+    state.themes = normalizeLibrary(parsed);
+    renderThemes();
   },
   desktopStatus(status) { state.mcp.desktop = status; renderMcp(); },
   agentSeen(author) {
@@ -1670,5 +1935,6 @@ if (PRESENTER_MODE) {
   renderAgent();
   updateChrome();
 }
-window.__dek = { state, settings, stage, thumbs, model, command, rpc }; // QA handle
+window.__dek = { state, settings, stage, thumbs, model, command, rpc, themes: { list: themeList, active: activeTheme, apply: applyThemeToDeck } }; // QA handle
 send({ type: 'ready', presenter: PRESENTER_MODE });
+if (!PRESENTER_MODE) send({ type: 'themesLoad' });

@@ -94,6 +94,50 @@ Store reusable snippets as templates in the body: `<template data-dek-component=
 ## Theme variables
 Define the deck's design tokens as CSS custom properties on `:root` (colors, fonts, spacing). `get_theme` reads them; `set_theme` upserts them into a `<style id="dek-theme">` block so the whole deck can be re-skinned with one call.
 
+## Design systems
+A **design system** is that whole visual language kept as data, outside any one deck, so the same look dresses all of them. Dek stores up to five, each with an append-only version history, in `~/Library/Application Support/Dek/design-systems.json`. The user switches between them from the design-system button at the bottom of the slide navigator (⌥⌘D); you build and edit them over MCP.
+
+### The token set
+`list_theme_tokens` returns every token with the complete default system as a worked example. The groups:
+
+| Group | What it decides |
+| --- | --- |
+| `meta` | `mode` (dark / light), `mood`, `notes` — when to reach for this system |
+| `typography` | `fonts.display/body/mono` (`family`, `fallback`, `weights`, `url`), `scale` (display · h1 · h2 · h3 · lead · body · small · caption), `weight`, `tracking`, `leading`, `transform`, `measure` |
+| `color` | `bg`, `surface`, `surfaceAlt`, `ink`, `inkMuted`, `inkFaint`, `accent`, `accentInk`, `accentSoft`, `hairline`, `highlight`, `positive`, `negative`, `warning`, `series[6]`, `gradient` |
+| `space` | `unit`, `slidePadX/Y`, `gap`, `gapTight`, `gapLoose`, `radius`, `radiusSm`, `radiusLg`, `border`, `rule`, `shadow` |
+| `motion` | `transition` + `transitionMs` + `ease` (between slides), `fragment` + `fragmentMs`, `autoAnimateMs`, `enter` + `enterMs` + `stagger`, `reducedMotion` |
+| `chart` | `palette`, `grid`, `legend`, `values`, `smooth`, `dots`, `compact`, `ticks`, `gridOpacity`, `axisOpacity`, `prefix`, `suffix`, `decimals` |
+| `components` | named `{{var}}` snippets written into the deck as `<template data-dek-component>` |
+| `css` | raw CSS appended verbatim, for anything the tokens do not cover |
+
+### What applying one does
+`apply_theme` rewrites four things and nothing else:
+
+1. **`<style id="dek-theme">`** — every token as a custom property (`--font-display`, `--text-h1`, `--bg`, `--ink`, `--accent`, `--gap`, `--radius`, `--dek-transition-ms`, `--dek-c1…6`, …) followed by the rules that use them.
+2. **`<meta name="dek-transition">`** — the system's slide transition.
+3. **`<meta name="dek-chart">`** — the chart defaults, which every `.dek-chart` figure inherits unless its own `data-chart` options say otherwise.
+4. **`<meta name="dek-theme" content="id@version">`** — which system and version dressed the deck, so Dek can tell you when the system has moved on.
+
+Everything else in the file — the deck's own `<style>` blocks, slides, notes, scripts — is untouched.
+
+### Writing slides against a system
+Use the tokens, not literals: `color: var(--ink)`, `font-family: var(--font-display)`, `gap: var(--gap)`. The helper classes `dek-display` `dek-lead` `dek-muted` `dek-caption` `dek-eyebrow` `dek-accent` `dek-mono` `dek-card` `dek-surface` `dek-rule` `dek-positive` `dek-negative` `dek-warning` are all bound to them.
+
+The compiled block is the deck's **base layer**: it beats plain element styling (`h1 { … }`) but loses to any class-based rule the deck writes, so a slide can always override it. Roles that mean "the same ink, dimmer" (`small`, `figcaption`, `th`, `blockquote`, `dek-muted`, `dek-caption`) follow `currentColor`, so a slide that flips to a dark background stays readable. A slide that inverts should redeclare the tokens it changes on itself:
+
+```css
+section.inverted { --bg: oklch(0.18 0.02 265); --ink: oklch(0.96 0.01 90); --hairline: oklch(0.34 0.02 265);
+                   background: var(--bg); color: var(--ink); }
+```
+
+`apply_theme` reports `missing_vars`: custom properties the deck's CSS reads that the incoming system does not define. A non-empty list means those rules stopped resolving — rewrite them against the system's tokens, or put the values in the system's `css`.
+
+### The tools
+`list_themes` (what exists, what is on the deck, whether it is out of date) · `list_theme_tokens` · `get_theme_system` · `preview_theme_css` (compile without writing) · `create_theme` · `update_theme` (merges a patch; `null` removes a key; every change is a new version) · `revert_theme` · `duplicate_theme` · `delete_theme` · `apply_theme` · `remove_theme` · `capture_theme` (turn the look a deck already has into a system — the way to start from a deck you like).
+
+Design one *with* the user: read the deck, agree the direction out loud, then write a complete token set in one `create_theme`, apply it, and check it with `snapshot_slide` on a title slide, a dense slide and a chart slide. Each `update_theme` is a version they can roll back, so give every one a `note` that says what changed.
+
 ## Compatibility with Claude Design decks
 Dek opens Claude Design exports directly (they are unpacked into a `<name> (Dek).html` copy) and honors that format's conventions in any deck:
 - `data-speaker-notes="…"` on a section is read as speaker notes when there is no `<aside class="notes">`.

@@ -17,6 +17,7 @@ A quiet stage. The slide is the only thing that emits light; everything around i
 - HTML in, presentation out. No proprietary format: a deck is a readable, diffable HTML file that any agent or browser can open.
 - Agent-first editing. Every mutation Dek can do (add, duplicate, move, delete slides; edit elements) is available as an MCP tool, and every agent change lands in the file immediately and is undoable with ⌘Z. The agent can *see* its work through slide snapshots.
 - Hot reload is the edit loop. When the file changes on disk (agent, editor, git) Dek reloads in place and stays on the same slide; CSS-only changes swap live without a reload.
+- Design systems, not per-deck styling. A deck's visual language (type, color, spacing, motion, chart and component preferences) is data kept outside the deck, versioned, and shared across decks; the agent designs it in conversation, the human switches between five of them from the navigator and rolls back any version.
 - Motion is a first-class citizen: fragments, slide transitions, auto-animate between slides, enter animations, animated charts and CSS 3D are built into the runtime so decks look alive without a framework.
 - Never interrupt a presentation: no dialogs, no badges, no reload flashes while presenting.
 

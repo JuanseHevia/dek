@@ -177,6 +177,69 @@ const TOOLS = [
     description: 'Upsert design tokens as CSS custom properties on :root in a <style id="dek-theme"> block (created if missing). Keys with or without the leading "--"; null removes a variable. Re-skins every slide that uses the variables.',
     inputSchema: { type: 'object', properties: { vars: { type: 'object', additionalProperties: true } }, required: ['vars'], additionalProperties: false },
   },
+  // ---- design systems (a versioned visual language, shared across decks) ----
+  {
+    name: 'list_themes',
+    description: 'The design-system library: every system (id, name, description, version, mode, palette swatches, fonts, transition), which one dresses the open deck and whether a newer version of it exists, and how many of the 5 slots are used. Call this before any other design-system tool.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'list_theme_tokens',
+    description: 'Every token a design system can set, grouped (typography, color, space, motion, chart, components, css) with the complete default system as a worked example. Read it before create_theme or update_theme so you set real token names rather than guessing.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'get_theme_system',
+    description: 'The full token set of one design system plus its version history. Without `id`, the system on the open deck. Pass `version` to read an older one before deciding whether to revert.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' }, version: { type: 'integer' } }, additionalProperties: false },
+  },
+  {
+    name: 'preview_theme_css',
+    description: 'The CSS a system compiles to (and the chart defaults it implies) without touching any deck. Use it to check a system you are about to create, or to explain what one does.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' }, version: { type: 'integer' }, system: { type: 'object', additionalProperties: true, description: 'An unsaved system to compile instead of a stored one' } }, additionalProperties: false },
+  },
+  {
+    name: 'create_theme',
+    description: 'Create a design system from a token object and (unless apply=false) put it on the open deck. The library holds 5; delete one first when it is full. Set as much of the system as you can in one call — partial systems inherit the defaults. Returns its id.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        description: { type: 'string', description: 'What this system is for, in one line' },
+        system: { type: 'object', additionalProperties: true, description: 'The tokens; see list_theme_tokens' },
+        note: { type: 'string', description: 'What this first version is (shown in the history)' },
+        apply: { type: 'boolean', description: 'Apply it to the open deck (default true)' },
+      },
+      required: ['name'], additionalProperties: false,
+    },
+  },
+  {
+    name: 'update_theme',
+    description: 'Change a design system\'s tokens. The patch is merged into the current tokens (null removes a key, arrays replace); pass replace=true to swap the whole system. Every token change becomes a new version, so `note` should say what you changed and why. Re-applies to the open deck when that deck uses this system.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        system: { type: 'object', additionalProperties: true },
+        replace: { type: 'boolean' },
+        name: { type: 'string' },
+        description: { type: 'string' },
+        note: { type: 'string' },
+        apply: { type: 'boolean' },
+      },
+      required: ['id'], additionalProperties: false,
+    },
+  },
+  { name: 'delete_theme', description: 'Delete a design system and its whole history. Decks already dressed with it keep their CSS.', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: false } },
+  { name: 'duplicate_theme', description: 'Copy a design system into a new one (fresh history) — the way to try a variant without spending a version of the original.', inputSchema: { type: 'object', properties: { id: { type: 'string' }, name: { type: 'string' } }, required: ['id'], additionalProperties: false } },
+  { name: 'revert_theme', description: 'Restore an earlier version of a design system. History is append-only: the old tokens come back as a new version.', inputSchema: { type: 'object', properties: { id: { type: 'string' }, version: { type: 'integer' }, apply: { type: 'boolean' } }, required: ['id', 'version'], additionalProperties: false } },
+  { name: 'apply_theme', description: 'Dress the open deck in a design system: one <style id="dek-theme"> block, the motion and chart <meta>s, and the components the system owns. Undoable with ⌘Z. Without `id`, re-applies the deck\'s current system (use it after update_theme).', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, additionalProperties: false } },
+  { name: 'remove_theme', description: 'Take the design system back off the open deck, leaving the deck\'s own CSS untouched.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
+  {
+    name: 'capture_theme',
+    description: 'Turn the look the open deck already has into a design system: its :root tokens, fonts, transition and components. The starting point when the user says "make a system out of this deck". Read the result with get_theme_system and refine it with update_theme.',
+    inputSchema: { type: 'object', properties: { name: { type: 'string' }, description: { type: 'string' } }, additionalProperties: false },
+  },
   {
     name: 'append_style',
     description: 'Append a <style> block to <head> (or replace the block with the given `id`). Use for slide-specific CSS without rewriting the whole head.',
@@ -228,6 +291,11 @@ const PROMPTS = [
     arguments: [{ name: 'topic', description: 'What the deck is about (and for whom)', required: true }, { name: 'slides', description: 'Approximate number of slides', required: false }],
   },
   {
+    name: 'design-system',
+    description: 'Design a visual system for the user\'s slides with them, then apply it to the open deck.',
+    arguments: [{ name: 'brief', description: 'The look they are after (mood, references, brand, audience)', required: false }, { name: 'id', description: 'An existing system to edit instead of starting a new one', required: false }],
+  },
+  {
     name: 'polish-deck',
     description: 'Review the open deck slide by slide with snapshots and raise its visual quality.',
     arguments: [],
@@ -237,6 +305,9 @@ const PROMPTS = [
 function promptText(name, args) {
   if (name === 'build-deck') {
     return `Build a deck in Dek about: ${args.topic || '(topic)'}.\n\nSteps: call get_format_guide once, then get_deck (create one with create_deck if none is open). Decide a theme first: set_theme with a small palette on tinted neutrals, a type scale, and put shared pieces in add_component. Write ${args.slides || '8–12'} slides with add_slide, one idea each, big type, real hierarchy; use fragments only where order matters, auto-animate for continuity, dek-chart for numbers. After every two or three slides call snapshot_slide and fix what you see (overflow, weak contrast, orphaned lines, crowded layouts). Finish with snapshot_overview and a short summary of the deck's structure and the theme variables you set.`;
+  }
+  if (name === 'design-system') {
+    return `Design a visual system for the slides in Dek${args.brief ? `: ${args.brief}` : ''}.\n\nStart by calling list_themes and list_theme_tokens, plus get_deck and get_theme to see what the open deck does today${args.id ? `, and get_theme_system for "${args.id}"` : ''}. Then talk it through with me before you write anything: what the deck is for, the mood, one or two reference looks, whether it reads dark or light. Propose a system out loud — type pairing and scale, a palette of two or three colors on tinted neutrals, spacing rhythm, one motion language, chart preferences, and the two or three components the deck will repeat — and only then ${args.id ? `update_theme "${args.id}"` : 'create_theme'} with a complete token set and a note saying what this version is.\n\nCheck it with snapshot_slide on a title slide, a dense slide and a chart slide; fix contrast, overflow and hierarchy with further update_theme calls (each is a version I can roll back). Finish with snapshot_overview and a short summary of the tokens you chose and why. The library holds 5 systems: if it is full, ask me which to delete rather than deleting one yourself.`;
   }
   return 'Review the deck open in Dek. Call get_deck, then snapshot_overview, then snapshot_slide for each slide. For every slide, note layout, hierarchy, contrast, spacing, and motion problems; fix them with update_element / update_slide / set_theme; re-snapshot to confirm. Keep the deck\'s existing voice and theme unless it is broken. End with a list of what changed.';
 }

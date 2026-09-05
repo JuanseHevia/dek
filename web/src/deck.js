@@ -268,7 +268,7 @@ export function appendStyle(model, css, id) {
   if (id) {
     // replace an existing block with that id
     const re = new RegExp(`<style[^>]*\\sid=["']${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["'][^>]*>[\\s\\S]*?<\\/style>`, 'i');
-    if (re.test(raw)) return raw.replace(re, tag);
+    if (re.test(raw)) return raw.replace(re, () => tag);
   }
   if (!/<head[\s>]/i.test(raw)) return setHeadInner(model, `<meta charset="utf-8">\n${tag}`);
   return raw.slice(0, s.head.end) + `${raw[s.head.end - 1] === '\n' ? '' : '\n'}${tag}\n` + raw.slice(s.head.end);
@@ -289,6 +289,49 @@ function appendStyleLike(model, tag) {
   const { raw, structure: s } = model;
   if (!/<head[\s>]/i.test(raw)) return setHeadInner(model, `<meta charset="utf-8">\n${tag}`);
   return raw.slice(0, s.head.end) + `\n${tag}\n` + raw.slice(s.head.end);
+}
+
+/** Set (or with `content === null` remove) a `<meta name="…">` in the head. */
+export function upsertMeta(model, name, content) {
+  const { raw } = model;
+  const re = new RegExp(`\\n?[ \\t]*<meta(?:"[^"]*"|'[^']*'|[^'">])*\\sname=["']${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["'](?:"[^"]*"|'[^']*'|[^'">])*>[ \\t]*`, 'i');
+  const tag = `<meta name="${name}" content="${String(content == null ? '' : content).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')}">`;
+  if (re.test(raw)) return content === null ? raw.replace(re, '\n') : raw.replace(re, () => `\n${tag}`);
+  if (content === null) return raw;
+  return appendStyleLike(model, tag);
+}
+
+// ---------- components ----------
+
+/** Every `<template data-dek-component="name">` in the file, with its source range. */
+export function componentRanges(raw) {
+  const out = [];
+  let open = null;
+  scanTags(raw, (t) => {
+    if (t.name !== 'template') return;
+    if (!t.closing) {
+      const nm = /data-dek-component\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(t.attrs);
+      if (nm) open = { name: nm[1] || nm[2], start: t.start, inner: t.end, attrs: t.attrs };
+    } else if (open) { out.push({ ...open, end: t.end, innerEnd: t.start }); open = null; }
+  });
+  return out.map((c) => {
+    const desc = /data-description\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(c.attrs);
+    const html = raw.slice(c.inner, c.innerEnd);
+    return {
+      name: c.name,
+      description: desc ? (desc[1] || desc[2]) : '',
+      themeOwned: /\sdata-dek-theme-owned(?=[\s=>/])/i.test(c.attrs + ' '),
+      html,
+      start: c.start,
+      end: c.end,
+      vars: Array.from(new Set(Array.from(html.matchAll(/\{\{\s*([\w-]+)\s*\}\}/g)).map((x) => x[1]))),
+    };
+  });
+}
+
+/** Fill `{{name}}` placeholders in a component's HTML. */
+export function fillVars(html, vars) {
+  return html.replace(/\{\{\s*([\w-]+)\s*\}\}/g, (_, k) => (vars && vars[k] !== undefined ? String(vars[k]) : ''));
 }
 
 // ---------- element edits inside one slide ----------

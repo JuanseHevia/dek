@@ -20,6 +20,7 @@ const DEV_DECKS = {
   '/dev/blank.html': 'dev/blank.html',
 };
 const devFiles = new Map(); // path -> content (in-memory "disk")
+const DEV_THEMES_KEY = 'dek.dev.designSystems'; // the library's stand-in for the app support folder
 
 async function devLoad(path) {
   let content = devFiles.get(path);
@@ -47,13 +48,23 @@ function devHandle(msg) {
           { name: 'welcome.html', dir: 'dev', path: '/dev/welcome.html' },
           { name: 'blank.html', dir: 'dev', path: '/dev/blank.html' },
         ]);
-        window.dekShell.agentInfo({ port: 43217, bridge: '/Applications/Dek.app/Contents/Resources/mcp/dek-mcp.js', version: '0.1.0-dev' });
+        window.dekShell.agentInfo({ port: 43217, bridge: '/Applications/Dek.app/Contents/Resources/mcp/dek-mcp.js', version: '0.1.0-dev', themes: '/dev/design-systems.json' });
         if (!/presenter/.test(location.search)) devLoad('/dev/welcome.html');
       }, 30);
       break;
     case 'save':
       devFiles.set(msg.path, msg.content);
       setTimeout(() => window.dekShell.saved({ path: msg.path, ok: true }), 60);
+      break;
+    case 'themesLoad':
+      setTimeout(() => {
+        let stored = '';
+        try { stored = localStorage.getItem(DEV_THEMES_KEY) || ''; } catch (e) { /* private mode */ }
+        window.dekShell.themesLoaded(stored);
+      }, 20);
+      break;
+    case 'themesSave':
+      try { localStorage.setItem(DEV_THEMES_KEY, msg.content); } catch (e) { /* private mode */ }
       break;
     case 'openPath':
       devLoad(msg.path);

@@ -31,6 +31,7 @@ Daylight (light):
 - One floating pill, top center: deck name · `4 / 18` counter · Present. Fades to 40% while the mouse is idle over the stage.
 - Presenting: chrome gone, theatre goes pure black, slide fills the screen, cursor hides after 2s.
 - Overview (light table): grid of thumbnails over the theatre, 5 per row, current slide ringed.
+- Design system control at the foot of the navigator: a six-stop swatch strip, the system's name, a mono version chip (`v3`, `v3+` in spot when the library has moved on). Its popover lists the five systems with a spot check on the active one; the manager is a full-width panel like Settings, one card per system with its tokens summarized in two columns and its version history inline. Destructive delete confirms in place on the button, never in a dialog.
 - Presenter view: current slide 60% width left; right column: next slide preview, notes; bottom bar: elapsed timer, clock, counter.
 
 ## Motion
