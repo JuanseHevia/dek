@@ -6,3 +6,6 @@ web/presenter.html
 
 # Local browser verification artifacts
 .playwright-cli/
+
+# Graft index cache
+graft/
