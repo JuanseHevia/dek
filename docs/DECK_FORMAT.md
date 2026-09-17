@@ -148,7 +148,7 @@ Dek opens Claude Design exports directly (they are unpacked into a `<name> (Dek)
 - Sections keep `data-deck-slide="n"` (index) after import, so styles written against `section[data-deck-slide]` still apply.
 
 ## Other metadata
-- `data-dek-skip` on a section keeps the slide in the file but out of the presentation: → and ← jump over it, it is dimmed in the navigator, and it stays reachable by number or `goto`. Claude Design's `data-deck-skip` means the same. Toggle from the slide's context menu or with `update_slide` (`attrs: {"data-dek-skip": ""}` / `null`).
+- `data-dek-skip` on a section keeps the slide in the file but out of the presentation: → and ← jump over it, it is dimmed in the navigator, and it stays editable, and can be shown during a talk only through an explicit presenter action or `goto` with `show_hidden: true`. Claude Design's `data-deck-skip` means the same. Toggle from the slide's context menu or with `update_slide` (`attrs: {"data-dek-skip": ""}` / `null`).
 - `<meta name="dek-autoslide" content="8000">` advances every 8 s while presenting (per slide: `data-autoslide="4000"`).
 - `<meta name="dek-slide-numbers" content="of">` asks Dek to show `4 / 18` on stage (`plain` shows `4`).
 
@@ -158,3 +158,19 @@ Dek opens Claude Design exports directly (they are unpacked into a `<name> (Dek)
 - Prefer full-bleed color or imagery over white boxes. Avoid centered-everything and identical three-column card grids.
 - Reveal with fragments only when the order matters. Use auto-animate for continuity between two views of the same thing.
 - Check your work: `snapshot_slide` returns a PNG of the slide exactly as the audience sees it.
+
+## Local editor and agent contract
+
+Dek keeps HTML as its source of truth. It adds `data-dek-id` to editable source objects; these stable identifiers are independent of animation `data-id` values. Use selectors such as `[data-dek-id="…"]` from read results instead of positional selectors when possible. Do not copy editor identifiers between objects. Keep charts, component uses, SVG, tables, and other complex visuals intact unless intentionally rewriting them.
+
+Organization is additive metadata: a `<script id="dek-metadata" type="application/json">` in the head holds `{ "version": 1, "sections": [{ "id": "…", "name": "…", "collapsed": false }] }`. A slide's `data-dek-section` assigns membership. Sections never introduce wrappers around slides. `data-dek-locked` prevents element-level edits until explicitly unlocked.
+
+`get_deck`, `get_slide`, `get_selection`, and mutation results include a document revision. Existing tools remain available. Mutations may pass `revision`; stale changes return `revision_conflict` without applying the requested edit. Reads that return raw HTML preserve their original return type; use `get_deck` for the revision before editing. Flushes, atomic writes and undo are shared with manual editing. During presenting, document mutations return retryable `presentation_active`; isolated reads and snapshots remain available.
+
+New tools include `edit_elements` (one transaction of style/attribute/text/insert/delete/group/lock operations), `select_elements`, `arrange_elements`, `add_shape`, `import_image`, `set_slide_visibility`, `batch_slides`, `manage_section`, `copy_slides`, `undo` and `redo`. Copying from another local deck leaves its source unchanged and transfers assets and reusable components to the destination.
+
+`export_deck` starts a local job with an absolute `path` and `format` (`pdf` or `pptx`). PowerPoint `mode` defaults to `editable`; `image` preserves appearance. `includeHidden` defaults to false. Poll `get_export_status` with `job_id` for progress, errors, warnings and the saved path. `cancel_export` stops an incomplete job without replacing its destination. Font/image loading finishes before capture, fragments use their final state, and both PowerPoint modes retain notes. Complex HTML becomes a reported image fallback in editable PowerPoint; live interactions and animation are static in exported files.
+
+### Component dependencies when copying slides
+
+Cross-deck copying transfers component templates, resolves conflicting component names, and copies local asset references beside the destination deck. External script libraries in the head are retained (excluding the injected Dek runtime). Mark component-specific head styles, inline scripts or stylesheet links with `data-dek-dependency="unique-name"` to carry them with components and deduplicate them at the destination. Global source theme styles stay in the source; the destination supplies the design. Keep component-owned structural styles inside templates or explicitly marked dependencies.

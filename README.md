@@ -1,8 +1,8 @@
 # Dek
 
-A macOS app that presents HTML slide decks. A deck is one `.html` file: each top-level `<section>` is a slide on a 1920×1080 canvas that Dek scales to any screen. You read, rehearse and present; an agent (Claude Code, Claude Desktop) writes and edits the deck over MCP and checks its work through snapshots. Light direct manipulation on the stage covers the small stuff: move, resize, retype, delete, add a text box or an image.
+A local, single-user macOS workspace for creating, editing and presenting HTML slide decks. Each deck remains one `.html` file with neighboring assets. Codex, Claude and other external agents work through MCP; the contextual editor handles everyday authoring by hand.
 
-<sub>Native Swift/AppKit shell + WKWebView. No Electron, no runtime downloads. ~100 KB of JS, one small binary. Sibling of [Tinta](../tinta).</sub>
+Native Swift/AppKit and WKWebView. No hosting, accounts, collaboration backend, or built-in agent conversation. The PowerPoint writer is pinned and bundled locally; no export service or runtime download is required.
 
 ## Build & install
 
@@ -43,7 +43,7 @@ Three regions: a slide **navigator** on the left (⌘\ hides it), the **stage** 
 | ⌥⌘P or s | presenter view (current, next, notes, timer) |
 | b / w | black / white screen |
 | esc | stop presenting |
-| ⇧⌘E | export a PDF (one vector page per slide) |
+| ⇧⌘E | export PDF from the native File menu |
 
 Present goes fullscreen with chrome hidden and the cursor auto-hiding; while presenting, nothing but navigation, black screen and the presenter view responds, so a stray ⌘⌫ or an agent edit never reaches the projector (file changes are applied when you stop). Past the last slide the screen goes black; one more click or → ends the presentation. Play → *Present on Second Display* puts the deck on the other screen and the presenter view on this one. Clicking advances (Settings turns it off). Speaker notes live in `<aside class="notes">` inside a slide and only show in the presenter view, whose timer counts elapsed time or down from a Settings countdown (double-click it to reset).
 
@@ -57,7 +57,11 @@ Dek watches the deck file. When it changes on disk (agent, editor, git checkout)
 
 ### Slides
 
-Drag thumbnails to reorder. Right-click one for New Slide After, Duplicate, Move Up/Down, Copy Slide HTML, Copy Slide ID, Present From Here, Skip Slide (kept in the file, dimmed in the navigator, jumped over while presenting), Delete. Also ⇧⌘N (new slide), ⌘D (duplicate), ⌘⌫ (delete), ⌥⌘↑/↓ (move). All of it writes the file immediately; ⌘Z undoes.
+Select slides with click, ⌘-click and ⇧-click. **Hide / Show** and **Duplicate** are visible above the navigator. The adjacent menu provides copy, move, section assignment and delete. Drag a selected set to reorder it while retaining its relative order. Named sections can collapse, rename and reorder; the overview offers the same batch actions. Deleting the last slide leaves an editable empty deck.
+
+Copy slides and paste them into another open deck: Dek copies local assets and reusable components, resolves component-name collisions, and uses the destination's design. The source remains unchanged. Each batch action is one undo step.
+
+Hidden slides stay available for editing. Presentation navigation skips them, and exports exclude them unless **Include hidden slides** is selected. During a talk, use the command palette's **Show hidden slide … now** action to show one explicitly. An all-hidden deck cannot start presenting.
 
 ### Design systems (⌥⌘D)
 
@@ -73,7 +77,19 @@ Applying one writes a single `<style id="dek-theme">` block, the transition and 
 
 ### Edit mode (⌘E or `e`)
 
-For the basics a human wants to fix by hand. Click an element to select it (headings, paragraphs, lists, images, charts, components), drag to move (Dek writes a CSS `translate`, so the layout stays intact), pull the corner handle to resize, ⌫ to delete, arrows to nudge (⇧ for 10px). Double-click or ⏎ edits text in place; the floating toolbar switches the type (H1 / H2 / H3 / Text), bold, italic, alignment and size. The bar at the bottom inserts a heading, a text box, or an image (⌥⌘H / ⌥⌘T / ⌥⌘I). Dropping an image file on the window inserts it too. Images are copied into an `assets/` folder next to the deck so the deck stays portable.
+The inspector appears in Edit mode. Double-click text to edit individual words; select a range before changing its font, exact size, color, highlight, weight or decoration. Paragraph controls include alignment, spacing, lists, links and case. Click an object for geometry, rotation, opacity, stacking, alignment, distribution and locking. ⇧-click selects multiple objects; group/ungroup keeps their HTML editable. Arrows nudge by 1 px, ⇧ by 10 px; Alt temporarily bypasses grid snapping while dragging.
+
+The insertion bar adds text, headings, shapes and images. Choose images with the file picker, drag/drop, or clipboard paste. Assets are copied beside the deck. Image controls provide replacement, descriptions, proportional/free resizing, fit/fill, crop-frame ratios and crop position. Click **Slide settings** for the deck title, slide background, transition and speaker notes.
+
+The deck-name menu exposes New, Open, Duplicate and the overview. The new-slide button offers blank, title, content, two-column and quote layouts. Charts, components, SVG and other complex HTML stay selectable as complete objects.
+
+### Saving and export
+
+Manual and agent changes share undo history and the same source mutation layer. “Saved” means the native writer acknowledged an atomic disk write. Typing is grouped into editing-session transactions. Deck switches and quitting flush active text first. Conflicting external changes stop saves and offer a recovered copy or a reload. Failed writes also retain recovery HTML in the app's support folder.
+
+**Export** offers PDF, editable PowerPoint, and PowerPoint that preserves appearance. PDF keeps vector content where WebKit supports it. Editable PowerPoint contains ordinary text, shapes and images as native objects; complex visuals use image fallbacks listed in the result. The appearance mode uses one image per slide. All modes preserve order and aspect ratio, and both PowerPoint modes include speaker notes. Fragments export in their final state. Missing images and failed pages fail the job explicitly.
+
+Exports and slide/overview snapshots use a separate renderer and preserve the current slide and selection. Native export shows progress and supports cancellation. MCP uses `export_deck`, `get_export_status` and `cancel_export`.
 
 ### Chrome
 
@@ -131,7 +147,7 @@ web/test/ node:test suites for the deck model and the design systems (`npm test`
 build.sh  web bundle + swiftc (universal) + .app assembly (ad-hoc signed)
 ```
 
-`PRODUCT.md` and `DESIGN.md` hold the brief the interface follows. `npm test` inside `web/` runs the suites (no dependencies beyond Node). For web-only work, `npm run dev` inside `web/` watches and rebuilds; `.claude/launch.json` serves `web/` at `localhost:8742` with a dev harness that loads `decks/Welcome.html`.
+`PRODUCT.md` and `DESIGN.md` hold the brief the interface follows. `npm test` inside `web/` runs the suites after `npm ci`. For web-only work, `npm run dev` inside `web/` watches and rebuilds; `.claude/launch.json` serves `web/` at `localhost:8742` with a dev harness that loads `decks/Welcome.html`.
 
 ## Reviews
 
@@ -141,3 +157,7 @@ build.sh  web bundle + swiftc (universal) + .app assembly (ad-hoc signed)
 
 - WebKit's `takeSnapshot` flattens CSS 3D transforms, so a spinning cube looks flat in `snapshot_slide` even though it renders correctly on screen.
 - Dek keeps rendering while covered by other windows and opts out of App Nap so agents can drive it from a terminal.
+
+## Acceptance checks
+
+Run `npm --prefix web test` and `./build.sh`. Representative decks are in `web/test/fixtures`. `mac/test/native_acceptance.py` exercises persistence, shared edits, sections, cross-deck copying, hidden-slide presentation and all export modes against a separately launched app with `DEK_SUPPORT_DIR` set to a temporary profile. It refuses the normal app profile. Never replace or restart an active personal Dek session for QA.

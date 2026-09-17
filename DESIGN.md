@@ -47,3 +47,6 @@ Daylight (light):
 - Panels open and close instantly; only their contents fade (150ms). Width is never animated.
 - Agent panel cards: author · time · tool sentence; no accept/reject (edits are already in the file; ⌘Z undoes).
 - No modals except native sheets (open/save) and the destructive confirm for deleting a slide with notes (inline in the navigator item, not a dialog).
+
+## Authoring refinement
+Edit mode opens a 272px contextual inspector in place of the agent panel. Text controls include font family, exact size, color, emphasis, highlight, alignment and spacing; shape and image controls share geometry, opacity and arrange actions. With no selection the inspector edits slide background, transition and speaker notes. An unobtrusive insert shelf provides text, image and shape entry points. Deck and export actions are explicit in the header. On narrow windows the slide navigator collapses during editing. Fields use native keyboard and color controls. Presentation and export never show editing chrome.
