@@ -3,3 +3,6 @@ web/dist/
 dist/
 .DS_Store
 web/presenter.html
+
+# Local browser verification artifacts
+.playwright-cli/

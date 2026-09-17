@@ -8,7 +8,14 @@
     "test": "node --test \"test/*.test.js\""
   },
   "devDependencies": {
-    "esbuild": "^0.28.2"
+    "esbuild": "^0.28.2",
+    "linkedom": "0.18.12"
   },
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "pptxgenjs": "4.0.1"
+  },
+  "overrides": {
+    "image-size": "2.0.4"
+  }
 }
