@@ -20,6 +20,9 @@ final class AgentServer {
     let token = UUID().uuidString
     private(set) var port: UInt16 = 0
 
+    var prepareCopy: ((_ content: String, _ source: String) throws -> String)?
+    var prepareImage: ((_ path: String) -> [String: Any]?)?
+    var nativeTool: ((_ tool: String, _ args: [String: Any], _ done: @escaping ([String: Any]) -> Void) -> Void)?
     var evalJS: JSHandler?
     /// Runs the shell's async rpc and returns its JSON string.
     var rpcJS: ((_ requestJSON: String, _ done: @escaping (String?) -> Void) -> Void)?
@@ -31,35 +34,27 @@ final class AgentServer {
     // MARK: lifecycle
 
     func start() {
-        for candidate in UInt16(43217)...43227 {
-            let params = NWParameters.tcp
-            params.requiredLocalEndpoint = NWEndpoint.hostPort(
-                host: NWEndpoint.Host("127.0.0.1"),
-                port: NWEndpoint.Port(rawValue: candidate)!)
-            if let l = try? NWListener(using: params) {
-                listener = l
-                port = candidate
-                break
+        let params = NWParameters.tcp
+        params.requiredLocalEndpoint = NWEndpoint.hostPort(host: NWEndpoint.Host("127.0.0.1"), port: .any)
+        do {
+            let listener = try NWListener(using: params); self.listener = listener
+            listener.newConnectionHandler = { [weak self] conn in self?.accept(conn) }
+            listener.stateUpdateHandler = { [weak self, weak listener] state in
+                guard let self else { return }
+                if case .ready = state { self.port = listener?.port?.rawValue ?? 0; self.writeStateFile() }
+                if case .failed(let error) = state { NSLog("dek agent: \(error)") }
             }
-        }
-        guard let listener else {
-            NSLog("dek agent: no port available")
-            return
-        }
-        listener.newConnectionHandler = { [weak self] conn in self?.accept(conn) }
-        listener.start(queue: queue)
-        writeStateFile()
-        NSLog("dek agent: listening on 127.0.0.1:%d", Int(port))
+            listener.start(queue: queue)
+        } catch { NSLog("dek agent: \(error)") }
     }
 
     func stop() {
         listener?.cancel()
-        try? FileManager.default.removeItem(at: Self.stateURL)
+        if let data = try? Data(contentsOf: Self.stateURL), let state = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], state["token"] as? String == token { try? FileManager.default.removeItem(at: Self.stateURL) }
     }
 
     static var supportDir: URL {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Dek", isDirectory: true)
+        let dir = ProcessInfo.processInfo.environment["DEK_SUPPORT_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) } ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Dek", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
@@ -100,6 +95,7 @@ final class AgentServer {
                 let headerData = buf.subdata(in: 0..<headerEnd.lowerBound)
                 guard let head = String(data: headerData, encoding: .utf8) else { conn.cancel(); return }
                 let contentLength = Self.contentLength(head)
+                guard contentLength >= 0, contentLength <= (16 << 20) else { conn.cancel(); return }
                 let bodyStart = headerEnd.upperBound
                 let haveBody = buf.count - bodyStart
                 if haveBody >= contentLength || complete {
@@ -174,6 +170,10 @@ final class AgentServer {
             }
             let args = payload["args"] as? [String: Any] ?? [:]
             let author = payload["author"] as? String ?? "Agent"
+            if ["export_deck", "get_export_status", "cancel_export", "snapshot_slide", "snapshot_overview"].contains(tool), let nativeTool {
+                DispatchQueue.main.async { nativeTool(tool, args) { res in self.queue.async { self.respondJSON(conn, res) } } }
+                return
+            }
             switch tool {
             case "snapshot_slide": snapshotSlide(conn, args: args, author: author)
             case "snapshot_overview": snapshotOverview(conn, args: args, author: author)
@@ -200,11 +200,27 @@ final class AgentServer {
 
     /// Run a shell tool and hand back its parsed response (writes and opens already performed).
     private func callShell(tool: String, args: [String: Any], author: String, done: @escaping ([String: Any]) -> Void) {
+        if !Thread.isMainThread { DispatchQueue.main.async { self.callShell(tool: tool, args: args, author: author, done: done) };return }
         var args = args
+        if ["import_image","copy_slides"].contains(tool) && args["__validated"] as? Bool != true {
+            var validation: [String:Any] = [:];if let revision=args["revision"] {validation["revision"]=revision}
+            callShell(tool:"_validate_mutation",args:validation,author:author) { result in
+                guard result["ok"] as? Bool == true else {done(result);return}
+                var next=args;next["__validated"]=true;self.callShell(tool:tool,args:next,author:author,done:done)
+            };return
+        }
         if tool == "import_deck", let path = args["path"] as? String {
             // the shell cannot read files; hand it the content of the file to import
             if let content = try? String(contentsOfFile: path, encoding: .utf8) { args["content"] = content }
             else { done(["ok": false, "error": "could not read \(path)"]); return }
+        }
+        if tool == "copy_slides" {
+            guard let path = args["source"] as? String, let content = try? String(contentsOfFile: path, encoding: .utf8) else { done(["ok":false,"error":"Could not read the source deck"]);return }
+            do { args["content"] = try prepareCopy?(content,path) } catch { done(["ok":false,"error":error.localizedDescription]);return }
+        }
+        if tool == "import_image" {
+            guard let path = args["path"] as? String, let info = prepareImage?(path), let src = info["src"] as? String else { done(["ok": false, "error": "Could not copy the image into deck assets"]); return }
+            args["src"] = src
         }
         let req: [String: Any] = ["tool": tool, "args": args, "author": author]
         guard let data = try? JSONSerialization.data(withJSONObject: req), let json = String(data: data, encoding: .utf8) else {
@@ -229,16 +245,25 @@ final class AgentServer {
                 if let writes = res["writes"] as? [[String: Any]] {
                     for w in writes {
                         if let p = w["path"] as? String, let c = w["content"] as? String {
-                            if !(self.writeFile?(p, c) ?? false) { failed.append(p) }
+                            let disk = try? String(contentsOfFile: p, encoding: .utf8)
+                            let expected = w["expected"] as? String
+                            let conflict = expected != nil && disk != expected && disk != c
+                            let ok = !conflict && (self.writeFile?(p, c) ?? false)
+                            if !ok { failed.append(p) }
+                            if !ok { try? c.write(to: Self.supportDir.appendingPathComponent("Recovery-" + UUID().uuidString + ".html"), atomically: true, encoding: .utf8) }
+                            let ack: [String: Any] = ["ok": ok, "path": p, "content": c, "conflict": conflict]
+                            if let data = try? JSONSerialization.data(withJSONObject: ack), let json = String(data: data, encoding: .utf8) { self.evalJS?("window.dekShell.rpcSaved(\(json))") { _ in } }
+
                         }
                     }
                 }
                 res.removeValue(forKey: "writes")
                 if !failed.isEmpty {
                     res["ok"] = false
-                    res["error"] = "could not write \(failed.joined(separator: ", "))"
+                    res["error"] = "save_failed: could not write \(failed.joined(separator: ", "))"
+                    res["code"] = "save_failed";res["retryable"] = true
                 }
-                if let open = res["open"] as? String {
+                if failed.isEmpty, let open = res["open"] as? String {
                     self.openFile?(open)
                     res.removeValue(forKey: "open")
                 }

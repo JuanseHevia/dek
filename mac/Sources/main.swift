@@ -75,10 +75,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     var watcher: DispatchSourceFileSystemObject?
     var watchedPath: String?
     var lastWrite: [String: Date] = [:]
+    private var lastWrittenContent: [String:String] = [:]
     var lastDoc: [String: Any]?
     var lastState: [String: Any] = [:]
     let agentServer = AgentServer()
     var selftestPath: String?
+    var exports: [String: DeckExporter] = [:]
 
     // MARK: lifecycle
 
@@ -104,6 +106,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                 }
             }
         }
+        agentServer.prepareCopy = { [weak self] content, source in
+            guard let self, let destination = self.currentURL else { throw NSError(domain: "Dek", code: 1, userInfo: [NSLocalizedDescriptionKey: "Open a destination deck first"]) }; return try self.copyAssets(in: content, from: URL(fileURLWithPath: source), to: destination)
+        }
+        agentServer.prepareImage = { [weak self] path in self?.imageAsset(URL(fileURLWithPath: path)) }
         agentServer.writeFile = { [weak self] path, content in self?.write(path, content) ?? false }
         agentServer.openFile = { [weak self] path in self?.openDocument(URL(fileURLWithPath: path)) }
         agentServer.snapshot = { [weak self] rect, out, done in self?.snapshot(rect: rect, to: out, done: done) }
@@ -113,6 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             guard let view, view.window != nil else { done(false); return }
             self.snapshot(view: view, rect: nil, to: out, done: done)
         }
+        agentServer.nativeTool = { [weak self] tool, args, done in self?.nativeAgentTool(tool, args: args, done: done) }
         agentServer.start()
         if let out = selftestPath {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in self?.runSelftest(out) }
@@ -133,6 +140,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
     }
 
+    private var departureReady = false
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if departureReady || !jsReady || currentURL == nil { return .terminateNow }
+        flushBeforeLeaving { ok in self.departureReady = ok; sender.reply(toApplicationShouldTerminate: ok) }
+        return .terminateLater
+    }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if sender === window && !departureReady { NSApp.terminate(nil); return false }; return true
+    }
+    private func flushBeforeLeaving(_ done: @escaping (Bool) -> Void) {
+        guard jsReady, currentURL != nil else { done(true); return }
+        webView.callAsyncJavaScript("return await window.dekShell.flushForDeparture();", arguments: [:], in: nil, in: .page) { result in
+            if case .success = result { done(true) }
+            else { self.callJS(self.webView, "window.dekShell.toast('Your edits could not be saved. Save a copy or resolve the disk change before closing.')");done(false) }
+        }
+    }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -157,6 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     private func makeConfig() -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
+        if ProcessInfo.processInfo.environment["DEK_SUPPORT_DIR"] != nil { config.websiteDataStore = .nonPersistent() }
         config.userContentController.add(self, name: "dek")
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
         config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
@@ -307,6 +331,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         let pdf = NSMenuItem(title: "Export PDF…", action: #selector(exportPdf(_:)), keyEquivalent: "E")
         pdf.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(pdf)
+        fileMenu.addItem(item("Export PowerPoint…", "export"))
         fileMenu.addItem(withTitle: "Reveal in Finder", action: #selector(revealInFinder(_:)), keyEquivalent: "")
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
@@ -328,7 +353,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         editMenu.addItem(item("Move Slide Up", "moveUp", String(UnicodeScalar(NSUpArrowFunctionKey)!), [.command, .option]))
         editMenu.addItem(item("Move Slide Down", "moveDown", String(UnicodeScalar(NSDownArrowFunctionKey)!), [.command, .option]))
         editMenu.addItem(item("Copy Slide HTML", "copyHtml", "c", [.command, .option]))
-        editMenu.addItem(item("Skip / Include Slide", "skip", "", []))
+        editMenu.addItem(item("Hide / Show Slide", "skip", "", []))
         editMenu.addItem(.separator())
         editMenu.addItem(item("Edit Slide Elements", "edit", "e"))
         editMenu.addItem(item("Insert Text", "insertText", "t", [.command, .option]))
@@ -397,6 +422,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     // MARK: documents
 
     func openDocument(_ url: URL) {
+        if jsReady && currentURL != nil {
+            flushBeforeLeaving { ok in if ok { self.loadDocument(url) } }; return
+        }
+        loadDocument(url)
+    }
+    private func loadDocument(_ url: URL) {
         guard let content = try? String(contentsOf: url, encoding: .utf8) else {
             NSSound.beep(); return
         }
@@ -423,9 +454,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     @discardableResult
     private func write(_ path: String, _ content: String) -> Bool {
         do {
-            lastWrite[path] = Date()
             try FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
             try content.write(toFile: path, atomically: true, encoding: .utf8)
+            lastWrite[path] = Date()
+            lastWrittenContent[path] = content
+            updatePresenter(path: path, content: content)
             return true
         } catch {
             NSLog("dek: write failed for \(path): \(error)")
@@ -443,12 +476,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         let src = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .rename, .delete, .extend], queue: .main)
         src.setEventHandler { [weak self] in
             guard let self else { return }
-            let mine = Date().timeIntervalSince(self.lastWrite[path] ?? .distantPast) < 1.0
             self.stopWatching()
             // editors and agents often write via rename; give the new file a moment to land
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
                 guard FileManager.default.fileExists(atPath: path) else { return }
-                if !mine { self.pushFileChange(url) }
+                self.pushFileChange(url)
                 self.startWatching(url)
             }
         }
@@ -466,6 +498,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     private func pushFileChange(_ url: URL) {
         guard let content = try? String(contentsOf: url, encoding: .utf8) else { return }
+        if lastWrittenContent[url.path] == content { return }
         let info: [String: Any] = ["name": url.lastPathComponent, "path": url.path, "content": content]
         callJS(webView, "window.dekShell.fileChanged(\(json(info)))")
         if presenterReady, let pv = presenterView { callJS(pv, "window.dekShell.fileChanged(\(json(info)))") }
@@ -484,6 +517,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                     doc["index"] = lastState["index"] ?? 0
                     doc["step"] = lastState["step"] ?? 0
                     callJS(pv, "window.dekShell.load(\(json(doc)))")
+                    callJS(pv, "window.dekShell.follow(\(json(lastState)))")
                 }
             } else {
                 jsReady = true
@@ -495,8 +529,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             }
         case "save":
             if let path = body["path"] as? String, let content = body["content"] as? String {
-                let ok = write(path, content)
-                callJS(webView, "window.dekShell.saved(\(json(["path": path, "ok": ok])))")
+                let expected = body["expected"] as? String
+                let disk = try? String(contentsOfFile: path, encoding: .utf8)
+                let conflict = expected != nil && disk != expected && disk != content
+                let ok = !conflict && write(path, content)
+                if !ok { let recovery = AgentServer.supportDir.appendingPathComponent("Recovery-" + UUID().uuidString + ".html"); try? content.write(to: recovery, atomically: true, encoding: .utf8) }
+                callJS(webView, "window.dekShell.saved(\(json(["path": path, "ok": ok, "conflict": conflict, "content": content])))")
             }
         case "active":
             if let path = body["path"] as? String {
@@ -507,7 +545,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         case "state":
             lastState = body
             if presenterReady, let pv = presenterView {
-                callJS(pv, "window.dekShell.follow(\(json(["index": body["index"] ?? 0, "step": body["step"] ?? 0])))")
+                callJS(pv, "window.dekShell.follow(\(json(body)))")
             }
         case "nav":
             if let action = body["action"] as? String {
@@ -540,6 +578,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         case "revealInFinder": revealInFinder(nil)
         case "reload": reloadDeck(nil)
         case "exportPdf": exportPdf(nil)
+        case "exportDeck": exportDialog(options: body)
+        case "cancelExport": if let id = body["id"] as? String { exports[id]?.cancel() }
+        case "revealExport": if let path = body["path"] as? String { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath:path)]) }
+        case "importImageData":
+            if let raw = body["data"] as? String, let data = Data(base64Encoded: String(raw.split(separator: ",", maxSplits: 1).last ?? "")) {
+                let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "-" + ((body["name"] as? String) ?? "Image.png"))
+                do { try data.write(to: temp); importImage(temp); try? FileManager.default.removeItem(at: temp) } catch { callJS(webView, "window.dekShell.toast('Could not import image')") }
+            }
+        case "preparePaste":
+            if var payload = body["payload"] as? [String: Any], let html = payload["html"] as? String, let source = payload["source"] as? String, let destination = body["destination"] as? String {
+                do { let content = "<head>" + (payload["head"] as? String ?? "") + "</head><body>" + html + "</body>"; let copied = try copyAssets(in: content, from: URL(fileURLWithPath: source), to: URL(fileURLWithPath: destination)); payload["document"] = copied; callJS(webView, "window.dekShell.pasteContent(\(json(payload)))") }
+                catch { callJS(webView, "window.dekShell.toast('Could not copy slide assets. The original is unchanged.')") }
+            }
         case "openSample": openSample()
         case "pickImage": pickImage()
         case "importImage":
@@ -613,7 +664,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             let templateURL = Bundle.main.resourceURL!.appendingPathComponent("templates/blank.html")
             var content = (try? String(contentsOf: templateURL, encoding: .utf8)) ?? "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>Untitled deck</title></head><body>\n<section><h1>Untitled deck</h1></section>\n</body></html>\n"
             let title = url.deletingPathExtension().lastPathComponent
-            content = content.replacingOccurrences(of: "Untitled deck", with: title)
+            content = content.replacingOccurrences(of: "Untitled deck", with: title.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;"))
             self.write(url.path, content)
             self.openDocument(url)
         }
@@ -648,17 +699,84 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     @objc func saveAsDialog(_ sender: Any?) {
         webView.evaluateJavaScript("window.dekShell.getContent()") { [weak self] result, _ in
-            guard let self, let content = result as? String else { return }
+            guard let self, result is String else { return }
             let panel = NSSavePanel()
             panel.allowedContentTypes = [.html]
             panel.nameFieldStringValue = self.currentURL.map { $0.deletingPathExtension().lastPathComponent + " copy.html" } ?? "Untitled.html"
             panel.directoryURL = self.currentURL?.deletingLastPathComponent()
             panel.beginSheetModal(for: self.window) { response in
                 guard response == .OK, let url = panel.url else { return }
-                self.write(url.path, content)
-                self.openDocument(url)
+                self.webView.evaluateJavaScript("window.dekShell.getContent()") { result, _ in
+                    guard let content = result as? String else { return }
+                    do {
+                        let portable = try self.copyAssets(in: content, from: self.currentURL ?? url, to: url)
+                        if self.write(url.path, portable) { self.loadDocument(url) }
+                    } catch { self.callJS(self.webView, "window.dekShell.toast('Could not duplicate deck assets')") }
+                }
             }
         }
+    }
+
+    private func updatePresenter(path: String, content: String) {
+        guard path == currentURL?.path else { return }
+        if var doc = lastDoc { doc["content"] = content; lastDoc = doc }
+        if presenterReady, let pv = presenterView { callJS(pv, "window.dekShell.fileChanged(\(json(["path": path, "content": content])))") }
+    }
+
+    /// Transfer referenced local assets before writing the new document.
+    private func copyAssets(in html: String, from source: URL, to destination: URL) throws -> String {
+        if source.deletingLastPathComponent() == destination.deletingLastPathComponent() { return html }
+        let fm = FileManager.default
+        let assets = destination.deletingLastPathComponent().appendingPathComponent("assets", isDirectory: true)
+        var copied: [String: URL] = [:]
+        func rewrite(_ text: String, relativeTo file: URL, outputFile: URL) throws -> String {
+            let patterns = [#"(?:src|href|poster)\s*=\s*["']([^"']+)["']"#, #"url\(\s*["']?([^)'"\s]+)["']?\s*\)"#, #"@import\s*["']([^"']+)["']"#]
+            var changes: [(NSRange, String)] = []
+            for pattern in patterns {
+                let re = try NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+                for match in re.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+                    guard let range = Range(match.range(at: 1), in: text) else { continue }
+                    let ref = String(text[range]).replacingOccurrences(of: "&amp;", with: "&")
+                    if ref.hasPrefix("#") { continue }
+                    guard let url = URL(string: ref, relativeTo: file.deletingLastPathComponent())?.absoluteURL, url.isFileURL else { continue }
+                    let key = url.standardizedFileURL.path
+                    guard fm.fileExists(atPath: key) else { throw NSError(domain: "Dek", code: 1, userInfo: [NSLocalizedDescriptionKey: "Missing asset: \(ref)"]) }
+                    let dst: URL
+                    if let cached = copied[key] { dst = cached }
+                    else {
+                        try fm.createDirectory(at: assets, withIntermediateDirectories: true)
+                        dst = assets.appendingPathComponent(String(UUID().uuidString.prefix(8)) + "-" + url.lastPathComponent)
+                        copied[key] = dst
+                        if url.pathExtension.lowercased() == "css" {
+                            let css = try String(contentsOf: url, encoding: .utf8)
+                            try rewrite(css, relativeTo: url, outputFile: dst).write(to: dst, atomically: true, encoding: .utf8)
+                        } else { try fm.copyItem(at: URL(fileURLWithPath: key), to: dst) }
+                    }
+                    let name = (outputFile.deletingLastPathComponent() == assets ? "" : "assets/") + dst.lastPathComponent
+                    var replacement = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
+                    if let query = url.query { replacement += "?" + query }; if let fragment = url.fragment { replacement += "#" + fragment }
+                    changes.append((match.range(at: 1), replacement))
+                }
+            }
+            let srcset = try NSRegularExpression(pattern: #"srcset\s*=\s*["']([^"']+)["']"#, options: [.caseInsensitive])
+            for match in srcset.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+                guard let range = Range(match.range(at: 1), in: text) else { continue }
+                let value = String(text[range]);if value.contains("data:") {continue}
+                let candidates = try value.split(separator: ",").map { candidate -> String in
+                    let parts = candidate.split(whereSeparator: { $0.isWhitespace });guard let ref=parts.first else{return ""}
+                    let wrapped = try rewrite("<img src=\"" + String(ref) + "\">",relativeTo:file,outputFile:outputFile)
+                    let copiedRef = String(wrapped.dropFirst(10).dropLast(2))
+                    return ([copiedRef] + parts.dropFirst().map(String.init)).joined(separator:" ")
+                }
+                changes.append((match.range(at:1),candidates.joined(separator:", ")))
+            }
+            var result = text
+            for (range, replacement) in changes.sorted(by: { $0.0.location > $1.0.location }) {
+                if let r = Range(range, in: result) { result.replaceSubrange(r, with: replacement) }
+            }
+            return result
+        }
+        return try rewrite(html, relativeTo: source, outputFile: destination)
     }
 
     // MARK: images (copied next to the deck so it stays portable)
@@ -676,7 +794,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     private func importImage(_ src: URL) {
-        guard let deck = currentURL else { NSSound.beep(); return }
+        if let info = imageAsset(src) { callJS(webView, "window.dekShell.imagePicked(\(json(info)))") }
+        else { callJS(webView, "window.dekShell.toast(\(AgentServer.jsonString("Could not import the image. Check that the file is readable.")))") }
+    }
+
+    private func imageAsset(_ src: URL) -> [String: Any]? {
+        guard let deck = currentURL else { return nil }
         let fm = FileManager.default
         let assets = deck.deletingLastPathComponent().appendingPathComponent("assets", isDirectory: true)
         try? fm.createDirectory(at: assets, withIntermediateDirectories: true)
@@ -689,13 +812,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             n += 1
         }
         if !fm.fileExists(atPath: dst.path) {
-            do { try fm.copyItem(at: src, to: dst) } catch { NSLog("dek: image copy failed \(error)"); NSSound.beep(); return }
+            do { try fm.copyItem(at: src, to: dst) } catch { NSLog("dek: image copy failed \(error)"); NSSound.beep(); return nil }
         }
         var size: [String: Any] = [:]
         if let img = NSImage(contentsOf: dst), let rep = img.representations.first {
             size = ["width": rep.pixelsWide, "height": rep.pixelsHigh]
         }
-        callJS(webView, "window.dekShell.imagePicked(\(json(["src": "assets/\(name)", "size": size])))")
+        return ["src": "assets/\(name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name)", "size": size]
     }
 
     @objc func revealInFinder(_ sender: Any?) {
@@ -704,50 +827,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     // MARK: PDF export (one page per slide, vector)
 
-    @objc func exportPdf(_ sender: Any?) {
-        guard currentURL != nil else { NSSound.beep(); return }
-        webView.evaluateJavaScript("window.dekShell.beginExport()") { [weak self] result, _ in
-            guard let self, let str = result as? String, let data = str.data(using: .utf8),
-                  let info = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                  let count = info["count"] as? Int, count > 0,
-                  let r = info["rect"] as? [String: Any],
-                  let x = r["x"] as? Double, let y = r["y"] as? Double, let w = r["w"] as? Double, let h = r["h"] as? Double else {
-                self?.callJS(self!.webView, "window.dekShell.endExport()")
-                return
-            }
-            let rect = CGRect(x: x, y: y, width: w, height: h)
-            let panel = NSSavePanel()
-            panel.allowedContentTypes = [.pdf]
-            panel.nameFieldStringValue = (self.currentURL?.deletingPathExtension().lastPathComponent ?? "Deck") + ".pdf"
-            panel.directoryURL = self.currentURL?.deletingLastPathComponent()
-            panel.beginSheetModal(for: self.window) { response in
-                guard response == .OK, let out = panel.url else {
-                    self.callJS(self.webView, "window.dekShell.endExport()")
-                    return
-                }
-                let doc = PDFDocument()
-                func step(_ i: Int) {
-                    if i >= count {
-                        doc.write(to: out)
-                        self.callJS(self.webView, "window.dekShell.endExport()")
-                        NSWorkspace.shared.activateFileViewerSelecting([out])
-                        return
-                    }
-                    self.callJS(self.webView, "window.dekShell.exportGoto(\(i))")
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                        let cfg = WKPDFConfiguration()
-                        cfg.rect = rect
-                        self.webView.createPDF(configuration: cfg) { res in
-                            if case .success(let pdfData) = res, let page = PDFDocument(data: pdfData)?.page(at: 0) {
-                                doc.insert(page, at: doc.pageCount)
-                            }
-                            step(i + 1)
-                        }
-                    }
-                }
-                step(0)
+    @objc func exportPdf(_ sender: Any?) { exportDialog(options: ["format": "pdf"]) }
+    func exportDialog(options: [String: Any]) {
+        guard currentURL != nil else { return }
+        let format = options["format"] as? String ?? "pdf"
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = format == "pdf" ? [.pdf] : [UTType(filenameExtension: "pptx") ?? .data]
+        panel.nameFieldStringValue = (currentURL?.deletingPathExtension().lastPathComponent ?? "Deck") + "." + format
+        panel.directoryURL = currentURL?.deletingLastPathComponent()
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .OK, let out = panel.url else { return }
+            var args = options; args["path"] = out.path; args["ui"] = true
+            _ = self.startExport(args) { result in
+                self.callJS(self.webView, "window.dekShell.exportResult(\(self.json(result)))")
             }
         }
+    }
+    @discardableResult
+    func startExport(_ args: [String: Any], done: @escaping ([String: Any]) -> Void) -> String {
+        let job = DeckExporter(); exports[job.id] = job
+        let jobID=job.id
+        if args["ui"] as? Bool == true { job.onProgress = { [weak self] status in guard let self else {return};var info=status;info["id"]=jobID;self.callJS(self.webView,"window.dekShell.exportProgress(\(self.json(info)))") } }
+        let out = URL(fileURLWithPath: args["path"] as? String ?? FileManager.default.temporaryDirectory.appendingPathComponent("Dek-\(job.id).pdf").path)
+        job.start(shell: webView, options: args, output: out, done: done)
+        return job.id
+    }
+    func nativeAgentTool(_ tool: String, args: [String: Any], done: @escaping ([String: Any]) -> Void) {
+        if tool == "snapshot_overview" {
+            var opts = args;opts["format"]="overview";opts["includeHidden"]=true;opts["path"]=args["out"] ?? AgentServer.snapshotDir.appendingPathComponent("overview-\(UUID().uuidString).png").path
+            _ = startExport(opts) { status in if let path=status["path"] {done(["ok":true,"result":["path":path]])} else {done(["ok":false,"error":status["error"] ?? "Overview failed"])} };return
+        }
+        if tool == "get_export_status" || tool == "cancel_export" {
+            guard let id = args["job_id"] as? String, let job = exports[id] else { done(["ok": false, "error": "Export job not found"]); return }
+            if tool == "cancel_export" { job.cancel() }
+            done(["ok": true, "result": job.status]); return
+        }
+        if tool == "export_deck" {
+            guard let path = args["path"] as? String, path.hasPrefix("/"), let format = args["format"] as? String, ["pdf", "pptx"].contains(format), path.lowercased().hasSuffix("." + format) else { done(["ok": false, "error": "Provide an absolute path ending in .pdf or .pptx and matching format"]); return }
+            if FileManager.default.fileExists(atPath: path) && args["overwrite"] as? Bool != true { done(["ok": false, "error": "File exists. Choose a new path or pass overwrite=true."]); return }
+            let id = startExport(args) { _ in }; done(["ok": true, "result": ["job_id": id, "status": "preparing"]]); return
+        }
+        if tool == "snapshot_slide" {
+            webView.callAsyncJavaScript("const m=window.__dek.model(); if(!m)throw new Error('No deck open'); const a=ref; const i=a==null?window.__dek.state.index:typeof a==='number'?a-1:m.slides.findIndex(s=>s.id===a);if(!m.slides[i])throw new Error('Slide not found');return {index:i,title:m.slides[i].title};", arguments: ["ref": args["slide"] ?? NSNull()], in: nil, in: .page) { [weak self] result in
+                guard let self, case .success(let value) = result, let slide = value as? [String: Any], let i = slide["index"] as? Int else { done(["ok": false, "error": "Slide not found"]); return }
+                var opts = args; opts["format"] = "png"; opts["includeHidden"] = true; opts["slideIndex"] = i
+                opts["path"] = args["out"] ?? AgentServer.snapshotDir.appendingPathComponent("slide-\(UUID().uuidString).png").path
+                _ = self.startExport(opts) { status in
+                    if let path = status["path"] { done(["ok": true, "result": ["path": path, "n": i + 1, "title": slide["title"] ?? "", "step": args["step"] ?? "last"]]) }
+                    else { done(["ok": false, "error": status["error"] ?? "Snapshot failed"]) }
+                }
+            }
+            return
+        }
+        done(["ok": false, "error": "Unknown native tool"])
     }
 
     // MARK: snapshots (agents look at the stage)
