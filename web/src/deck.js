@@ -79,8 +79,9 @@ const tpl = typeof document !== 'undefined' ? document.createElement('template')
 
 /** Parse one slide's HTML into an element (detached). */
 export function sectionElement(html) {
-  tpl.innerHTML = html.trim();
-  const el = tpl.content.firstElementChild;
+  const fragment = document.createElement('template');
+  fragment.innerHTML = html.trim();
+  const el = fragment.content.firstElementChild;
   return el && el.tagName === 'SECTION' ? el : null;
 }
 
@@ -92,6 +93,7 @@ export function slideInfo(html, index) {
   info.classes = sec.className || '';
   info.transition = sec.dataset.transition || '';
   info.autoAnimate = sec.hasAttribute('data-auto-animate');
+  info.section = sec.getAttribute('data-dek-section') || '';
   info.skip = sec.hasAttribute('data-dek-skip') || sec.hasAttribute('data-deck-skip');
   const h = sec.querySelector('h1, h2, h3, h4, h5, h6');
   const src = h || sec.querySelector('p, li, figcaption, blockquote') || sec;
@@ -99,10 +101,10 @@ export function slideInfo(html, index) {
   const notes = sec.querySelector('aside.notes, .notes');
   if (notes) {
     info.notesHtml = notes.innerHTML.trim();
-    info.notes = notes.textContent.replace(/\s+/g, ' ').trim();
+    const plain=notes.cloneNode(true);for(const br of plain.querySelectorAll('br'))br.replaceWith(document.createTextNode('\n'));for(const block of plain.querySelectorAll('p,div,li'))block.append(document.createTextNode('\n'));info.notes=plain.textContent.trim();
   } else if (sec.getAttribute('data-speaker-notes')) {
     // Claude Design keeps notes in an attribute
-    info.notes = sec.getAttribute('data-speaker-notes').replace(/\s+/g, ' ').trim();
+    info.notes = sec.getAttribute('data-speaker-notes').trim();
     info.notesHtml = info.notes.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
   }
   const idx = new Set();
@@ -418,6 +420,7 @@ export function getElements(html, selector, limit = 20) {
 
 export function setNotes(html, notes) {
   return withSlideDOM(html, (sec) => {
+    sec.removeAttribute('data-speaker-notes');
     let aside = sec.querySelector('aside.notes, .notes');
     if (!notes) { if (aside) aside.remove(); return; }
     if (!aside) {

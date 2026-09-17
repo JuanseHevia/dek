@@ -25,6 +25,7 @@ export function buildDocument(model, o = {}) {
     slideNumbers: !!o.slideNumbers,
     slideNumberFormat: o.slideNumberFormat || 'plain',
     autoslide: !!o.autoslide,
+    skipHidden: o.skipHidden !== false,
     autoslideMs: model.meta.autoslide || 0,
     size: model.meta.size,
   };
@@ -88,7 +89,7 @@ export class Stage {
       this.dek.on('end', () => this.emit('end'));
       this.dek.on('edit', (p) => this.emit('edit', p));
       this.dek.on('resize', (p) => this.emit('resize', p));
-      for (const type of ['keydown', 'keyup', 'click', 'mousemove', 'mousedown', 'contextmenu', 'wheel', 'dblclick']) {
+      for (const type of ['keydown', 'keyup', 'click', 'mousemove', 'mousedown', 'contextmenu', 'wheel', 'dblclick', 'paste', 'copy', 'cut']) {
         win.addEventListener(type, (e) => this.emit(type, e));
       }
       win.addEventListener('blur', () => this.emit('blur'));

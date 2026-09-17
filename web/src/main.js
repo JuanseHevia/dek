@@ -1,3 +1,7 @@
+import { exportManifest, inspectExportSlide, writePowerPoint } from './export.js';
+import { createInspector } from './inspector.js';
+import { shapeHTML, layoutHTML } from './authoring.js';
+import { elementOperations, slideOperations, documentMeta, setDocumentMeta, pathTarget, reorderSections, copySlidesInto, ensureObjectIds, freshSlide, transferHead } from './editor-model.js';
 import { send, isNative } from './bridge.js';
 import {
   parseDeck, insertSlide, replaceSlide, removeSlide, moveSlide, normalizeSection, withNewId, sectionId,
@@ -80,7 +84,7 @@ const state = {
   presenting: false,
   editing: false,
   sel: null,                // selected element info from the runtime (edit mode)
-  replaceImage: false,      // next picked image replaces the selected one
+  replaceImage: null,       // stable source target for an outstanding image picker
   blackout: null,           // null | 'black' | 'white'
   overview: false,
   settingsOpen: false,
@@ -100,6 +104,8 @@ const state = {
   quietTimer: null,
   cursorTimer: null,
   saveTimer: null,
+  revision: 0, epoch: crypto.randomUUID(), selectedSlides: new Set(), selectionAnchor: 0,
+  persistedRaw: null, pendingSave: null, saving: null, conflict: false, rpcPending: new Set(),
   drag: { from: -1 },
   lastActive: undefined,
 };
@@ -159,6 +165,7 @@ function stageOpts(index, step) {
     slideNumbers: numbers !== 'off' && numbers !== '',
     slideNumberFormat: numbers === 'of' ? 'of' : 'plain',
     autoslide: state.presenting,
+    skipHidden: state.presenting,
   };
 }
 
@@ -180,6 +187,7 @@ new ResizeObserver(() => layoutStage()).observe(els.stage);
 stage.on('change', (s) => {
   state.index = s.index;
   state.step = s.step;
+  if(state.selectedSlides.size<=1 && !state.selectedSlides.has(s.index))state.selectedSlides=new Set([s.index]);
   if (state.editing && stage.ok) { state.sel = stage.dek.edit.selected(); renderEltools(); }
   updateChrome();
   thumbs.setCurrent(s.index);
@@ -188,7 +196,14 @@ stage.on('change', (s) => {
 });
 stage.on('load', () => {
   layoutStage();
-  if (state.editing && stage.ok) stage.dek.edit.enable(true);
+  if (state.editing && stage.ok) {
+    stage.dek.edit.enable(true);state.sel=null;
+    const sec=stage.win.document.querySelectorAll('.dek-slide')[state.index],paths=[];
+    for(const id of state.restoreIds || []) { const el=sec?.querySelector(`[data-dek-id="${CSS.escape(id)}"]`);if(!el)continue;const path=[];let n=el;while(n!==sec){path.unshift([...n.parentElement.children].indexOf(n));n=n.parentElement;}paths.push(path); }
+    if(paths.length)state.sel=stage.dek.edit.selectMany(paths);
+    state.restoreIds=null;renderEltools();
+  }
+  if(state.pendingInsert) { const pending=state.pendingInsert;state.pendingInsert=null;insertHtml(pending.html,pending.options); }
 });
 stage.on('edit', (ev) => onEditEvent(ev));
 stage.on('keydown', (e) => onKey(e));
@@ -201,7 +216,7 @@ stage.on('end', () => { if (state.presenting) { state.atEnd = true; setBlackout(
 
 const thumbs = new Thumbs(els.thumbs, {
   draggable: true,
-  onSelect: (i) => goTo(i),
+  onSelect: (i,e) => selectSlide(i,e),
   onOpen: (i) => { goTo(i); setPresenting(true); },
   onMenu: (i, e) => openContextMenu(i, e.clientX, e.clientY),
   onDragStart: (i) => { state.drag.from = i; thumbs.items[i].el.classList.add('dragging'); },
@@ -216,9 +231,10 @@ const thumbs = new Thumbs(els.thumbs, {
   },
   onDrop: (from, i) => {
     let to = i + (state.drag.after ? 1 : 0);
-    if (from < to) to -= 1;
+    const indices=state.selectedSlides.has(from)?selectedSlides():[from];
+    to-=indices.filter(n=>n<to).length;
     clearDragState();
-    if (from !== to) moveSlideTo(from, to);
+    batchSlides('move',indices,{to});
   },
   onDragEnd: clearDragState,
 });
@@ -229,17 +245,22 @@ function clearDragState() {
 
 const ovThumbs = new Thumbs(els.ovgrid, {
   root: els.overview,
-  onSelect: (i) => { setOverview(false); goTo(i); },
+  onSelect: (i,e) => selectSlide(i,e),
+  onOpen: (i) => { setOverview(false);goTo(i); },
+  onMenu: (i,e)=>openContextMenu(i,e.clientX,e.clientY),
 });
 
 // ---------- deck loading & writes ----------
 
 function loadDeck(doc, opts = {}) {
-  const m = parseDeck(doc.content);
+  const content=PRESENTER_MODE?doc.content:ensureObjectIds(doc.content);
+  const m = parseDeck(content);
   const prev = state.deck;
   const samePath = prev && prev.path === doc.path;
+  if(samePath && prev.model.raw!==content)state.revision++;
+  state.persistedRaw=doc.content;
   state.deck = { name: doc.name || doc.path.split('/').pop(), path: doc.path, baseHref: doc.baseHref || baseHrefFor(doc.path), model: m };
-  if (!samePath) { state.history = { past: [], future: [] }; state.index = 0; state.step = 0; }
+  if (!samePath) { state.persistedRaw = doc.content; state.saving = null; state.pendingSave = null; state.conflict = false; state.epoch = crypto.randomUUID(); state.selectedSlides = new Set([0]); state.history = { past: [], future: [] }; state.index = 0; state.step = 0; }
   const index = clamp(opts.index !== undefined ? opts.index : state.index, 0, Math.max(0, m.slides.length - 1));
   const step = opts.step !== undefined ? opts.step : (samePath ? state.step : 0);
   state.index = index;
@@ -254,12 +275,27 @@ function loadDeck(doc, opts = {}) {
   updateChrome();
   layoutStage();
   if (PRESENTER_MODE) presenterDeckLoaded();
+  if(content!==doc.content)write(doc.path,content);
 }
 
 function write(path, content) {
-  if (state.inRpc) { state.rpcWrites.push({ path, content }); return; }
+  if (state.inRpc) { state.rpcWrites.push({ path, content, expected: path === state.deck?.path ? state.persistedRaw : undefined }); return; }
+  if (path !== state.deck?.path) { send({ type:'save', path, content }); return; }
+  state.pendingSave = { path, content }; pumpSave();
+}
+function pumpSave() {
+  if (state.saving || state.rpcPending.size || !state.pendingSave || state.conflict) return;
+  state.saving = state.pendingSave; state.pendingSave = null;
   setSaveState('saving');
-  send({ type: 'save', path, content });
+  send({ type:'save', ...state.saving, expected:state.persistedRaw });
+}
+const revision = () => `${state.epoch}:${state.revision}`;
+function syncElementIds() {
+  if (!stage.ok || !model()?.slides[state.index]) return;
+  const source = new DOMParser().parseFromString(model().slides[state.index].html,'text/html').querySelector('section');
+  const live = stage.win.document.querySelectorAll('.dek-slide')[state.index];
+  function walk(a,b) { if(!a || !b)return; if(a.dataset.dekId)b.dataset.dekId=a.dataset.dekId; Array.from(a.children).forEach((n,i)=>walk(n,b.children[i])); }
+  walk(source,live);
 }
 
 function indexAfterChange(oldM, newM, idx) {
@@ -274,21 +310,27 @@ function indexAfterChange(oldM, newM, idx) {
 /** Every mutation goes through here: history, model, stage, thumbnails, file. */
 function applyRaw(newRaw, o = {}) {
   const deck = state.deck;
+  newRaw=ensureObjectIds(newRaw);
   if (!deck || newRaw === deck.model.raw) return false;
   if (!o.skipHistory) {
-    state.history.past.push({ raw: deck.model.raw, label: o.label || 'change' });
+    if(!o.transaction || state.history.past.at(-1)?.transaction!==o.transaction) state.history.past.push({ raw: deck.model.raw, label: o.label || 'change', transaction:o.transaction });
     if (state.history.past.length > 80) state.history.past.shift();
     state.history.future = [];
   }
   const oldModel = deck.model;
+  const oldSection=oldModel.slides[state.index] && new DOMParser().parseFromString(oldModel.slides[state.index].html,'text/html').querySelector('section');
+  const oldSelection=(state.sel?.paths || []).map(p=>oldSection?.querySelector(pathTarget(p))).filter(Boolean);
+  state.revision++;
   const m = parseDeck(newRaw);
   deck.model = m;
   let index = o.focusIndex !== undefined ? o.focusIndex : indexAfterChange(oldModel, m, state.index);
   index = clamp(index, 0, Math.max(0, m.slides.length - 1));
+  state.restoreIds=index===state.index?oldSelection.flatMap(el=>el.matches('.dek-group')?[el.dataset.dekId,...el.querySelectorAll('[data-dek-id]')].map(n=>typeof n==='string'?n:n.dataset.dekId):[el.dataset.dekId]).filter(Boolean):[];
   const sameSlide = index === state.index && o.focusIndex === undefined;
   document.documentElement.style.setProperty('--deck-aspect', `${m.meta.size.w} / ${m.meta.size.h}`);
   if (o.noReload && stage.ok) {
     stage.model = m; // the live DOM already shows this change
+    syncElementIds();
   } else if (!stage.hotSwapStyles(m)) {
     stage.load(m, stageOpts(index, sameSlide ? state.step : 0));
   } else if (index !== state.index) {
@@ -304,6 +346,7 @@ function applyRaw(newRaw, o = {}) {
 }
 
 function undo() {
+  if (stage.ok) stage.dek.edit.commitText();
   const h = state.history;
   const entry = h.past.pop();
   if (!entry || !state.deck) { toast('Nothing to undo'); return; }
@@ -312,6 +355,7 @@ function undo() {
   toast(`Undid ${entry.label}`);
 }
 function redo() {
+  if (stage.ok) stage.dek.edit.commitText();
   const h = state.history;
   const entry = h.future.pop();
   if (!entry || !state.deck) { toast('Nothing to redo'); return; }
@@ -336,26 +380,33 @@ function updateChrome() {
   els.deckname.title = state.deck ? state.deck.path : '';
   els.counter.textContent = n ? `${state.index + 1} / ${n}` : '– / –';
   els.navcount.textContent = n ? String(n) : '';
-  els.empty.classList.toggle('show', !state.deck && !state.settingsOpen && !designModeOpen() && !PRESENTER_MODE);
+  els.empty.classList.toggle('show', (!state.deck || !n) && !state.settingsOpen && !designModeOpen() && !PRESENTER_MODE);
+  $('emptyslide').hidden=!state.deck || n>0;
+  if(!state.deck)els.empty.querySelector('.empty-hint').innerHTML='Open an HTML deck <kbd>⌘O</kbd> · New deck <kbd>⌘N</kbd>';
   renderThemes();
+  renderSlideManagement();
+  if (state.editing) renderEltools();
   els.frame.hidden = !state.deck;
-  els.presentbtn.disabled = !n;
+  els.presentbtn.disabled = !n || !m.slides.some(s=>!s.skip);
+  $('exportbtn').disabled = !n;
+  els.editbtn.disabled = !state.deck;
   const path = state.deck ? state.deck.path : null;
   const title = m ? (m.meta.title || state.deck.name) : null;
-  if (state.lastActive !== path) {
-    state.lastActive = path;
+  if (state.lastActive !== path+'|'+title) {
+    state.lastActive = path+'|'+title;
     send({ type: 'active', path, name: title });
   }
 }
 
 function broadcastState() {
   const s = stage.state();
-  const payload = { type: 'state', index: state.index, step: state.step, count: slideCount(), title: s ? s.title : '', presenting: state.presenting, path: state.deck ? state.deck.path : null };
+  const payload = { type: 'state', index: state.index, step: state.step, count: slideCount(), title: s ? s.title : '', presenting: state.presenting, startedAt:state.presentationStartedAt || null, blackout:state.blackout, atEnd:state.atEnd, timer:settings.timer, path: state.deck ? state.deck.path : null };
   send(payload);
   if (!isNative && !PRESENTER_MODE) devChannel.postMessage({ kind: 'follow', index: state.index, step: state.step });
 }
 
 function quietPill() {
+  if(state.editing)return;
   els.pill.classList.add('quiet');
 }
 function onActivity() {
@@ -373,8 +424,9 @@ window.addEventListener('keydown', onActivity, true);
 
 // ---------- navigation ----------
 
-function goTo(i, step = 0) {
+function goTo(i, step = 0, explicitHidden = false) {
   if (!state.deck) return;
+  if(state.presenting && model().slides[i]?.skip && !explicitHidden) { toast('This slide is hidden. Use “Show hidden slide now” from its menu.');return; }
   stage.go(i, step);
 }
 
@@ -412,7 +464,9 @@ function cancelGoto() {
 function setPresenting(on, o = {}) {
   if (on === state.presenting) return;
   if (on && !state.deck) return;
+  if (on) { const visible=model().slides.findIndex((s,i)=>i>=state.index && !s.skip); if(visible<0) { toast('No visible slides from here. Show a slide first.'); return; } if(model().slides[state.index]?.skip) goTo(visible); }
   state.presenting = on;
+  if(on)state.presentationStartedAt=Date.now();
   document.body.classList.toggle('presenting', on);
   if (on) {
     setEditing(false);
@@ -432,7 +486,7 @@ function setPresenting(on, o = {}) {
     if (!o.fromNative) send({ type: 'fullscreen', on: false });
     if (state.pendingExternal) { const info = state.pendingExternal; state.pendingExternal = null; window.dekShell.fileChanged(info); }
   }
-  stage.setOptions({ autoslide: on });
+  stage.setOptions({ autoslide: on, skipHidden:on });
   layoutStage();
   broadcastState();
   stage.focus();
@@ -442,6 +496,7 @@ function setBlackout(kind) {
   state.blackout = kind;
   els.blackout.hidden = !kind;
   els.blackout.classList.toggle('white', kind === 'white');
+  if(!PRESENTER_MODE)broadcastState();
 }
 
 function onStageClick(e) {
@@ -457,12 +512,15 @@ function onStageClick(e) {
 function setEditing(on) {
   on = !!on && !!state.deck && !state.presenting;
   if (on === state.editing) return;
-  if (on) { setOverview(false); setSettingsOpen(false); }
+  if (on) { setOverview(false); setSettingsOpen(false); setDesignOpen(false); setAgentOpen(false); }
   state.editing = on;
   document.body.classList.toggle('editing', on);
   els.editbtn.classList.toggle('active', on);
   els.editbtn.textContent = on ? 'Done' : 'Edit';
   els.insertbar.hidden = !on;
+  $('inspector').hidden = !on;
+  renderEltools();
+  layoutStage();
   if (stage.ok) stage.dek.edit.enable(on);
   if (!on) { state.sel = null; renderEltools(); }
   else if (!store.get('dek.editHintShown', false)) { toast('Click to select · drag to move · double-click to edit text'); store.set('dek.editHintShown', true); }
@@ -474,100 +532,85 @@ const EDIT_LABELS = { style: 'move/resize', text: 'text edit', delete: 'delete e
 
 /** Apply an edit the runtime already performed on the live DOM to the model and the file. */
 function onEditEvent(ev) {
-  if (ev.type === 'select') { state.sel = ev.info; if (ev.info) document.body.classList.add('edit-seen'); renderEltools(); return; }
-  const m = model();
-  if (!m || !ev.path) return;
-  const i = state.index;
-  const sel = pathSelector(ev.path);
-  const html = m.slides[i].html;
-  let out;
+  if(ev.type==='notice'){if(state.inRpc)throw new Error(ev.message);toast(ev.message);return;}
+  if (ev.type === 'select') { state.sel=ev.info; renderEltools(); return; }
+  const m=model(); if (!m?.slides[state.index]) return;
   try {
-    if (ev.type !== 'insert') {
-      const found = getElements(html, sel, 1);
-      if (!found.length) throw new Error('out of sync');
-    }
-    switch (ev.type) {
-      case 'style': out = updateElement(html, { selector: sel, style: ev.style }).html; break;
-      case 'attrs': out = updateElement(html, { selector: sel, attrs: ev.attrs }).html; break;
-      case 'text': out = updateElement(html, { selector: sel, inner: ev.html }).html; break;
-      case 'delete': out = deleteElement(html, { selector: sel }).html; break;
-      case 'retag': out = retagElement(html, { selector: sel, tag: ev.tag }); break;
-      case 'insert': out = addElement(html, { html: ev.html }); break;
-      default: return;
-    }
-  } catch (e) {
-    toast('Could not save that edit, reloading the slide');
-    stage.load(m, stageOpts(state.index, state.step));
-    return;
-  }
-  applyRaw(replaceSlide(m, i, out), { label: EDIT_LABELS[ev.type] || 'edit', noReload: true });
-  if (ev.info !== undefined) { state.sel = ev.info; renderEltools(); }
+    const ops = ev.type === 'batch' ? ev.operations : [{ type: ev.type, target:ev.type==='insert'?':scope':ev.path, style:ev.style, attrs:ev.attrs, html:ev.html, tag:ev.tag }];
+    const html=elementOperations(m.slides[state.index].html,ops);
+    applyRaw(replaceSlide(m,state.index,html),{label:ev.label || EDIT_LABELS[ev.type] || 'edit elements',noReload:ev.type!=='batch',transaction:ev.transaction});
+    if(ev.info!==undefined)state.sel=ev.info;
+    renderEltools();
+  } catch(e) { if(state.inRpc)throw e;toast(e.message || 'Could not apply edit'); stage.load(m,stageOpts(state.index,state.step)); }
 }
 
-function renderEltools() {
-  const info = state.sel;
-  if (!state.editing || !info) { els.eltools.hidden = true; return; }
-  const kind = info.kind;
-  const b = (label, title, action, cls = '') => `<button data-act="${action}" class="${cls}" title="${esc(title)}">${label}</button>`;
-  const alignIcon = (a) => {
-    const x = a === 'left' ? [1, 1, 1] : a === 'center' ? [2.5, 1, 2.5] : [4, 1, 4];
-    return `<svg width="14" height="12" viewBox="0 0 14 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M${x[0]} 2h9M${x[1]} 6h12M${x[2]} 10h9"/></svg>`;
-  };
-  let html = '';
-  if (kind === 'text') {
-    const tag = info.tag;
-    for (const [t, l] of [['h1', 'H1'], ['h2', 'H2'], ['h3', 'H3'], ['p', 'Text']]) html += b(l, `Make this a ${l === 'Text' ? 'paragraph' : l}`, `tag:${t}`, tag === t ? 'on' : '');
-    html += `<span class="el-sep"></span>`;
-    html += b('<b>B</b>', 'Bold (⌘B while editing)', 'fmt:bold') + b('<i>I</i>', 'Italic (⌘I while editing)', 'fmt:italic');
-    html += `<span class="el-sep"></span>`;
-    for (const a of ['left', 'center', 'right']) html += b(alignIcon(a), `Align ${a}`, `align:${a}`, (info.textAlign === a || (a === 'left' && info.textAlign === 'start')) ? 'on' : '');
-    html += `<span class="el-sep"></span>`;
-    html += b('A−', 'Smaller text', 'size:-') + b('A+', 'Larger text', 'size:+');
-    html += `<span class="el-sep"></span>`;
-  } else if (kind === 'image') {
-    html += b('Replace…', 'Choose another image', 'replace') + `<span class="el-sep"></span>`;
-  }
-  html += b('Delete', 'Delete element (⌫)', 'delete', 'danger');
-  els.eltools.innerHTML = html;
-  els.eltools.hidden = false;
-  placeEltools();
-}
-
-function placeEltools() {
-  const info = state.sel;
-  if (!info || els.eltools.hidden) return;
-  const f = els.frame.getBoundingClientRect();
-  const r = els.eltools.getBoundingClientRect();
-  let left = f.left + info.rect.x;
-  let top = f.top + info.rect.y - r.height - 12;
-  if (top < 52) top = f.top + info.rect.y + info.rect.h + 12;
-  left = Math.max(8, Math.min(window.innerWidth - r.width - 8, left));
-  els.eltools.style.left = left + 'px';
-  els.eltools.style.top = Math.max(8, top) + 'px';
-}
-
-els.eltools.addEventListener('mousedown', (e) => e.preventDefault());
-els.eltools.addEventListener('click', (e) => {
-  const btn = e.target.closest('button[data-act]');
-  if (!btn || !stage.ok) return;
-  const [act, arg] = btn.dataset.act.split(':');
-  const ed = stage.dek.edit;
-  switch (act) {
-    case 'tag': ed.retag(arg); break;
-    case 'fmt': if (!ed.selected()?.editingText) ed.startText({ selectAll: true }); ed.format(arg); break;
-    case 'align': ed.setStyle({ 'text-align': arg }); break;
-    case 'size': { const cur = state.sel ? state.sel.fontSizeRem : 1; const next = Math.max(0.4, Math.round(cur * (arg === '+' ? 1.15 : 1 / 1.15) * 100) / 100); ed.setStyle({ 'font-size': next + 'rem' }); break; }
-    case 'replace': state.replaceImage = true; send({ type: 'pickImage' }); break;
-    case 'delete': ed.deleteSelected(); break;
-    default: break;
-  }
+const inspector=createInspector($('inspector'),{
+  capture:()=>stage.ok && stage.dek.edit.captureTextSelection(),
+  select:(path,add)=>stage.ok && stage.dek.edit.select(path,add),
+  action:inspectorAction,
+  field:inspectorField,
 });
+function renderEltools() {
+  els.eltools.hidden=true;
+  if(!state.editing || !stage.ok) return;
+  const slide=model()?.slides[state.index];
+  const sec=stage.win.document.querySelectorAll('.dek-slide')[state.index];
+  inspector.render({snapping:stage.dek.edit.snapping(),info:state.sel, title:model()?.meta.title, layers:stage.dek.edit.layers(), slide:slide ? {number:state.index+1, notes:slide.notes, transition:slide.transition, hidden:slide.skip, background:sec ? stage.win.getComputedStyle(sec).backgroundColor : ''} : null});
+}
+function placeEltools() { renderEltools(); }
+function inspectorAction(action) {
+  if(!stage.ok) return;
+  const ed=stage.dek.edit;
+  if(['bold','italic','underline','strikeThrough','insertUnorderedList','insertOrderedList'].includes(action)) ed.format(action);
+  else if(action==='clear') ed.clear();
+  else if(action==='replace') pickImage(true);
+  else if(action==='duplicate') { const html=ed.duplicate(); if(html)insertHtml(html); }
+  else if(action==='delete') ed.deleteSelected();
+  else if(action==='front' || action==='back') ed.arrange(action);
+  else if(action==='centerX' || action==='centerY') ed.center(action==='centerX'?'x':'y');
+  else if(action==='hideSlide') batchSlides(model().slides[state.index].skip?'show':'hide',[state.index]);
+  else if(action==='group') ed.group();
+  else if(action==='ungroup') ed.ungroup();
+  else if(action==='lock') ed.lock(!state.sel?.locked);
+  else if(action.startsWith('align-')) ed.align(action.slice(6));
+  else if(action.startsWith('distribute-')) ed.distribute(action.slice(11));
+  else if(action==='snap') ed.snap(!ed.snapping());
+  state.sel=ed.selected(); renderEltools();
+}
+function inspectorField(key,value,field) {
+  if(!stage.ok || !state.deck)return;
+  const ed=stage.dek.edit;
+  if(key==='title') { ed.commitText(); applyRaw(setTitle(model(),value),{label:'deck title'}); return; }
+  if(['notes','slideBackground','transition'].includes(key)) {
+    ed.commitText(); const m=model(); let html=m.slides[state.index]?.html; if(!html)return;
+    if(key==='notes') html=setNotes(html,value?'<span>'+esc(value).replace(/\n/g,'<br>')+'</span>':'');
+    if(key==='transition') html=setSlideAttrs(html,{'data-transition':value || null});
+    if(key==='slideBackground') { if(!CSS.supports('background',value)) { toast('Enter a color name or hex code, such as navy or #D9B65A'); return; } html=updateElement(html,{selector:':scope',style:{background:value}}).html; }
+    applyRaw(replaceSlide(m,state.index,html),{label:key==='notes'?'speaker notes':'slide settings'}); return;
+  }
+  if(key==='cropRatio') { const ratio=Number(value);if(ratio>0)ed.setStyle({height:(state.sel.width/ratio)+'px','object-fit':'cover'});return; }
+  if(key==='alt') { ed.setAttrs({alt:value}); return; }
+  if(key==='link') { if(value && !/^(https?:|mailto:|#)/i.test(value)){toast('Use a web address (https://…), email link (mailto:…), or slide link (#slide-id)');return;} ed.link(value); return; }
+  if(key==='x' || key==='y') { ed.geometry(key,value); return; }
+  if(key==='crop-x' || key==='crop-y') { const pos=(state.sel?.objectPosition || '50% 50%').split(' '); pos[key==='crop-x'?0:1]=value+'%'; ed.setStyle({'object-position':pos.join(' ')}); return; }
+  if(key==='aspect') { ed.setAttrs({'data-dek-aspect':value}); return; }
+  const px=['font-size','letter-spacing','border-radius','border-width','width','height'];
+  const cssKey=key==='textHighlight'?'background-color':key;
+  const cssValue=px.includes(key)?value+'px':key==='rotate'?value+'deg':key==='opacity'?String(value/100):String(value);
+  if(!CSS.supports(cssKey,cssValue)) { toast(`${field?.getAttribute('aria-label') || 'Value'}: ${['color','textHighlight','background-color','border-color'].includes(key)?'use a color name, hex code, or transparent':'enter a valid value for this setting'}`); field?.setAttribute('aria-invalid','true'); return; }
+  const style={[cssKey]:cssValue};
+  if(key==='border-width')style['border-style']='solid';
+  if(['width','height'].includes(key) && state.sel?.kind==='image' && state.sel.aspect!==false) { style[key==='width'?'height':'width']=(key==='width'?value*state.sel.height/state.sel.width:value*state.sel.width/state.sel.height)+'px'; }
+  if(['color','font-family','font-size','font-weight','textHighlight','letter-spacing','text-transform'].includes(key))ed.textStyle(style); else ed.setStyle(style);
+  state.sel=ed.selected(); renderEltools();
+}
 
 let insertCount = 0;
 function insertHtml(html, { text } = {}) {
   if (!state.deck) return;
   if (!state.editing) setEditing(true);
-  if (!stage.ok) return;
+  if (!stage.ok || !model().slides.length) { state.pendingInsert={html,options:{text}};if(!model().slides.length)addSlideAfter(-1,layoutHTML('blank'));return; }
+  html=new DOMParser().parseFromString(freshSlide('<section>'+html+'</section>',[]),'text/html').querySelector('section').innerHTML;
   const path = stage.dek.edit.insert(html);
   if (!path) return;
   onEditEvent({ type: 'insert', path, html });
@@ -584,10 +627,11 @@ function insertHeading() {
   const o = insertOffset();
   insertHtml(`<h2 class="dek-text" style="position: absolute; left: ${o.x}px; top: ${o.y}px; width: 1400px; margin: 0;">Heading</h2>`, { text: true });
 }
-function insertImage() {
+function insertImage() { pickImage(false); }
+function pickImage(replace = false) {
   if (!state.deck) return;
   if (!state.editing) setEditing(true);
-  state.replaceImage = false;
+  state.replaceImage = replace && state.sel?.kind==='image' ? {path:state.deck.path,slide:model().slides[state.index].id,id:state.sel.id} : null;
   if (isNative) { send({ type: 'pickImage' }); return; }
   // dev harness: read the file locally
   const input = document.createElement('input');
@@ -597,7 +641,7 @@ function insertImage() {
     const f = input.files && input.files[0];
     if (!f) return;
     const reader = new FileReader();
-    reader.onload = () => imagePicked({ src: reader.result, size: {} });
+    reader.onload = () => imagePicked({ src: reader.result, size: {}, name:f.name });
     reader.readAsDataURL(f);
   });
   input.click();
@@ -606,13 +650,16 @@ function imagePicked(info) {
   if (!info || !info.src) return;
   if (!state.deck) return;
   if (!state.editing) setEditing(true);
-  if (state.replaceImage && state.sel && state.sel.kind === 'image' && stage.ok) {
-    state.replaceImage = false;
-    stage.dek.edit.setAttrs({ src: info.src });
-    toast('Image replaced');
+  const replacement=state.replaceImage;state.replaceImage=null;
+  if(replacement) {
+    const m=model(),i=m.slides.findIndex(s=>s.id===replacement.slide);
+    if(state.deck.path!==replacement.path || i<0){toast('The original image is no longer available');return;}
+    try {
+      const html=elementOperations(m.slides[i].html,[{type:'attrs',target:`[data-dek-id="${replacement.id}"]`,attrs:{src:info.src}}]);
+      applyRaw(replaceSlide(m,i,html),{label:'replace image'});toast('Image replaced');
+    } catch(e){toast(e.message);}
     return;
   }
-  state.replaceImage = false;
   const o = insertOffset();
   const natural = info.size && info.size.width ? Math.min(info.size.width, 960) : 800;
   insertHtml(`<img src="${info.src.replace(/"/g, '&quot;')}" alt="" style="position: absolute; left: ${o.x}px; top: ${o.y}px; width: ${natural}px; height: auto;">`);
@@ -622,7 +669,7 @@ function imagePicked(info) {
 els.insertbar.addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-insert]');
   if (!btn) return;
-  ({ text: insertText, heading: insertHeading, image: insertImage })[btn.dataset.insert]?.();
+  ({ text: insertText, heading: insertHeading, image: insertImage, shape: () => showInsertMenu('shape') })[btn.dataset.insert]?.();
 });
 els.editbtn.addEventListener('click', () => setEditing(!state.editing));
 window.addEventListener('resize', placeEltools);
@@ -638,7 +685,7 @@ function setOverview(on) {
   document.body.classList.toggle('overview-open', on);
   if (on && state.deck) {
     ovThumbs.render(model(), { baseHref: state.deck.baseHref, current: state.index, force: true });
-    requestAnimationFrame(() => ovThumbs.scrollToCurrent());
+    renderSlideManagement();requestAnimationFrame(() => ovThumbs.scrollToCurrent());
   }
 }
 
@@ -662,7 +709,7 @@ function duplicateSlide(i) {
   const m = needDeck();
   const src = m.slides[i];
   if (!src) return null;
-  const copy = withNewId(src.html, takenIds());
+  const copy = freshSlide(src.html, takenIds());
   applyRaw(insertSlide(m, copy, i + 1), { label: 'duplicate slide', focusIndex: i + 1 });
   toast('Slide duplicated');
   return { index: i + 1, id: sectionId(copy) };
@@ -690,8 +737,8 @@ function toggleSkip(i) {
   const s = m.slides[i];
   if (!s) return;
   const html = setSlideAttrs(s.html, { 'data-dek-skip': s.skip ? null : '', 'data-deck-skip': null });
-  applyRaw(replaceSlide(m, i, html), { label: s.skip ? 'unskip slide' : 'skip slide' });
-  toast(s.skip ? `Slide ${i + 1} back in the deck` : `Slide ${i + 1} skipped while presenting`, '⌘Z');
+  applyRaw(replaceSlide(m, i, html), { label: s.skip ? 'show slide' : 'hide slide' });
+  toast(s.skip ? `Slide ${i + 1} shown` : `Slide ${i + 1} hidden`, '⌘Z');
 }
 
 function copySlideHtml(i) {
@@ -713,8 +760,8 @@ function openContextMenu(i, x, y) {
     null,
     { label: 'Copy Slide HTML', hint: '', run: () => copySlideHtml(i) },
     { label: 'Copy Slide ID', hint: '', run: () => { const id = model().slides[i].id; if (id) navigator.clipboard.writeText(id).then(() => toast(`Copied ${id}`)); else toast('This slide has no id yet'); } },
-    { label: 'Present From Here', hint: '', run: () => { goTo(i); setPresenting(true); } },
-    { label: (model().slides[i] && model().slides[i].skip) ? 'Include Slide' : 'Skip Slide', hint: '', run: () => toggleSkip(i) },
+    { label: state.presenting && model().slides[i].skip?'Show hidden slide now':'Present From Here', hint: '', run: () => { goTo(i,0,state.presenting); setPresenting(true); } },
+    { label: (model().slides[i] && model().slides[i].skip) ? 'Show Slide' : 'Hide Slide', hint: '', run: () => toggleSkip(i) },
     null,
     { label: 'Delete Slide', hint: '⌘⌫', run: () => deleteSlide(i), danger: true },
   ];
@@ -750,6 +797,7 @@ function setNavOpen(open) {
 }
 
 function setAgentOpen(open) {
+  if(open && state.editing)setEditing(false);
   state.agentOpen = open;
   document.body.classList.toggle('agent-open', open);
   els.agentbtn.classList.toggle('active', open);
@@ -1084,7 +1132,7 @@ setInterval(agentBadge, 30000);
 
 const COMMANDS = () => [
   { label: 'Present', hint: '⌘⏎', run: () => setPresenting(true) },
-  { label: 'Present From Start', hint: '⌥⌘⏎', run: () => { goTo(0); setPresenting(true); } },
+  { label: 'Present From Start', hint: '⌥⌘⏎', run: () => { goTo(model()?.slides.findIndex(s=>!s.skip) ?? 0); setPresenting(true); } },
   { label: 'Presenter View', hint: '⌥⌘P', run: () => send({ type: 'presenter', open: true }) },
   { label: 'Light Table', hint: 'O', run: () => setOverview(!state.overview) },
   { label: 'Black Screen', hint: 'B', run: () => setBlackout(state.blackout === 'black' ? null : 'black') },
@@ -1096,7 +1144,7 @@ const COMMANDS = () => [
   { label: 'New Slide After Current', hint: '⇧⌘N', run: () => addSlideAfter(state.index) },
   { label: 'Duplicate Slide', hint: '⌘D', run: () => duplicateSlide(state.index) },
   { label: 'Delete Slide', hint: '⌘⌫', run: () => deleteSlide(state.index) },
-  { label: 'Skip / Include Slide', hint: '', run: () => toggleSkip(state.index) },
+  { label: model()?.slides[state.index]?.skip?'Show slide':'Hide slide', hint: '', run: () => batchSlides(model()?.slides[state.index]?.skip?'show':'hide') },
   { label: 'Move Slide Up', hint: '⌥⌘↑', run: () => moveSlideTo(state.index, state.index - 1) },
   { label: 'Move Slide Down', hint: '⌥⌘↓', run: () => moveSlideTo(state.index, state.index + 1) },
   { label: 'Copy Slide HTML', hint: '', run: () => copySlideHtml(state.index) },
@@ -1127,7 +1175,7 @@ const COMMANDS = () => [
 
 const palette = createPalette({
   root: els.quickopen, input: els.qoinput, list: els.qolist, empty: els.qoempty,
-  commands: COMMANDS,
+  commands: () => state.presenting ? [...COMMANDS().filter(c=>['Presenter View','Black Screen','Go to Slide…','Next Slide','Previous Slide','First Slide','Last Slide'].includes(c.label)),{label:'Stop presenting',run:()=>setPresenting(false)},...model().slides.filter(s=>s.skip).map(s=>({label:`Show hidden slide ${s.index+1} now: ${s.title}`,run:()=>goTo(s.index,0,true)}))] : COMMANDS(),
   slides: () => (model() ? model().slides.map((s) => ({ index: s.index, title: s.title, current: s.index === state.index })) : []),
   onSlide: (i) => goTo(i),
   onClose: () => stage.focus(),
@@ -1136,6 +1184,7 @@ const palette = createPalette({
 // ---------- keyboard ----------
 
 function escapeKey() {
+  if (!$('workspacepopover').hidden) { $('workspacepopover').hidden=true; return true; }
   if (!els.ctxmenu.hidden) { closeContextMenu(); return true; }
   if (themesUI.escape()) { updateChrome(); stage.focus(); return true; }
   if (palette.isOpen()) { palette.close(); return true; }
@@ -1165,17 +1214,19 @@ const CMD_KEYS = (e) => {
   const table = {
     'k': 'palette', 'p': e.shiftKey ? 'palette' : 'goto', '\\': 'nav', 'j': 'agent', ',': 'settings', '/': 'shortcuts',
     'r': 'reload', 'd': 'duplicate', 'Backspace': 'delete', 'Enter': 'present', 'z': e.shiftKey ? 'redo' : 'undo',
-    'o': e.shiftKey ? 'overview' : 'open', 'n': e.shiftKey ? 'newSlide' : 'newDeck', 'e': 'edit',
+    's':'save', 'g':e.shiftKey?'ungroup':'group', 'o': e.shiftKey ? 'overview' : 'open', 'n': e.shiftKey ? 'newSlide' : 'newDeck', 'e': e.shiftKey?'export':'edit',
   };
   return table[k] || null;
 };
 
 function onKey(e) {
   const t = e.target;
-  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
   if (PRESENTER_MODE) return presenterKey(e);
   const mod = e.metaKey || e.ctrlKey;
   if (mod) {
+    if(e.key.toLowerCase()==='a'){e.preventDefault();if(state.editing && stage.ok && !e.target.closest?.('#nav,#overview')){stage.dek.edit.selectMany(stage.dek.edit.layers().map(l=>l.path));}else{state.selectedSlides=new Set(model()?.slides.map(s=>s.index)||[]);renderSlideManagement();}return;}
+    if(['c','x','v'].includes(e.key.toLowerCase()) && !e.altKey) { if(e.key.toLowerCase()!=='v') { e.preventDefault(); copySelection(e.key.toLowerCase()==='x'); } return; }
     const cmd = CMD_KEYS(e);
     if (cmd) { e.preventDefault(); command(cmd); }
     return;
@@ -1220,7 +1271,7 @@ function onKey(e) {
 window.addEventListener('keydown', onKey);
 
 /** Named commands: menus (Swift), palette and keyboard all end up here. */
-const PRESENTING_OK = new Set(['next', 'prev', 'first', 'last', 'gotoIndex', 'blackout', 'stop', 'present', 'presentStart', 'presenter', 'escape', 'closeOverlays', 'goto']);
+const PRESENTING_OK = new Set(['palette', 'next', 'prev', 'first', 'last', 'gotoIndex', 'blackout', 'stop', 'present', 'presentStart', 'presenter', 'escape', 'closeOverlays', 'goto']);
 function command(name, arg) {
   if (state.presenting && !PRESENTING_OK.has(name)) return;
   switch (name) {
@@ -1233,13 +1284,13 @@ function command(name, arg) {
     case 'themesPanel': setDesignOpen(true); break;
     case 'shortcuts': setShortcutsOpen(els.shortcuts.hidden); break;
     case 'reload': send({ type: 'reload' }); break;
-    case 'duplicate': if (state.deck) duplicateSlide(state.index); break;
-    case 'delete': if (state.deck) deleteSlide(state.index); break;
-    case 'newSlide': if (state.deck) addSlideAfter(state.index); break;
+    case 'duplicate': if (state.editing && state.sel) inspectorAction('duplicate'); else if (state.deck) batchSlides('duplicate'); break;
+    case 'delete': if (state.deck) batchSlides('delete'); break;
+    case 'newSlide': if (state.deck) showInsertMenu('slide'); break;
     case 'moveUp': if (state.deck) moveSlideTo(state.index, state.index - 1); break;
     case 'moveDown': if (state.deck) moveSlideTo(state.index, state.index + 1); break;
     case 'present': setPresenting(!state.presenting); break;
-    case 'presentStart': goTo(0); setPresenting(true); break;
+    case 'presentStart': goTo(model()?.slides.findIndex(s=>!s.skip) ?? 0); setPresenting(true); break;
     case 'stop': setPresenting(false); break;
     case 'presenter': send({ type: 'presenter', open: true }); break;
     case 'overview': if (state.deck) setOverview(!state.overview); break;
@@ -1255,7 +1306,11 @@ function command(name, arg) {
     case 'last': stage.last(); break;
     case 'gotoIndex': goTo(arg | 0); break;
     case 'copyHtml': copySlideHtml(state.index); break;
-    case 'skip': if (state.deck) toggleSkip(state.index); break;
+    case 'skip': if (state.deck) batchSlides(model().slides[state.index]?.skip?'show':'hide'); break;
+    case 'export': showExportMenu(); break;
+    case 'save': if(stage.ok)stage.dek.edit.commitText(); if(state.deck)write(state.deck.path,model().raw); break;
+    case 'group': if(stage.ok)stage.dek.edit.group(); break;
+    case 'ungroup': if(stage.ok)stage.dek.edit.ungroup(); break;
     case 'edit': setEditing(!state.editing); break;
     case 'insertText': insertText(); break;
     case 'insertHeading': insertHeading(); break;
@@ -1270,7 +1325,7 @@ function command(name, arg) {
 // ---------- MCP tools (called by the Swift shell through rpc) ----------
 
 function slideSummary(s) {
-  return { n: s.index + 1, id: s.id, title: s.title, notes: s.notes ? s.notes.slice(0, 160) : '', fragments: s.fragments, transition: s.transition, autoAnimate: s.autoAnimate, skip: !!s.skip };
+  return { n: s.index + 1, id: s.id, title: s.title, notes: s.notes ? s.notes.slice(0, 160) : '', fragments: s.fragments, transition: s.transition, autoAnimate: s.autoAnimate, section:s.section, skip: !!s.skip };
 }
 
 function themeVars(m) {
@@ -1303,16 +1358,93 @@ function slideRef(args) {
   return i;
 }
 
+function sourceTargets(html,selector,all) {
+  if(selector===':scope' || selector==='section')return [':scope'];
+  const sec=new DOMParser().parseFromString(html,'text/html').querySelector('section');
+  const nodes=[...sec.querySelectorAll(selector)];if(!nodes.length)throw new Error(`No element matches ${selector}`);
+  return (all?nodes:nodes.slice(0,1)).map(el=>{const path=[];let n=el;while(n!==sec){path.unshift([...n.parentElement.children].indexOf(n));n=n.parentElement;}return path;});
+}
+
 function updateSlideHtml(i, html, label) {
   const m = needDeck();
   applyRaw(replaceSlide(m, i, html), { label, focusIndex: i });
 }
 
 const TOOLS = {
+  _validate_mutation() { return {result:{valid:true}}; },
+  get_selection() {
+    return {result:{slide:state.index+1,elements:state.sel ? (state.sel.paths || [state.sel.path]).map(path=>({path,selector:pathTarget(path)})) : [],info:state.sel,selected_slides:selectedSlides().map(i=>i+1)}};
+  },
+  edit_elements(a) {
+    const i=slideRef(a);if(!Array.isArray(a.operations) || !a.operations.length)throw new Error('operations are required');
+    updateSlideHtml(i,elementOperations(needDeck().slides[i].html,a.operations),a.label || 'agent: edit elements');
+    return {result:{n:i+1,operations:a.operations.length},summary:'edited slide elements',slide:i};
+  },
+  copy_slides(a) {
+    if(!a.content)throw new Error('Source deck could not be read');const source=parseDeck(a.content);
+    const indices=(a.slides || source.slides.map(s=>s.index+1)).map(ref=>resolveSlide(source,ref,0));
+    if(indices.some(i=>!source.slides[i]))throw new Error('Source slide not found');
+    const at=a.at===undefined?state.index+1:clamp(a.at-1,0,slideCount());
+    applyRaw(copySlidesInto(needDeck(),{html:indices.map(i=>source.slides[i].html).join('\n'),head:transferHead(source)},at),{label:'copy slides from deck',focusIndex:at});
+    return{result:{copied:indices.length,source:a.source},summary:`copied ${indices.length} slides from another deck`};
+  },
+  async select_elements(a) {
+    const i=slideRef(a);setEditing(true);const deadline=Date.now()+5000;
+    while(!stage.ok){if(Date.now()>deadline)throw new Error('Renderer is not ready');await new Promise(r=>setTimeout(r,20));}
+    stage.go(i,0,{instant:true});
+    const sec=stage.win.document.querySelectorAll('.dek-slide')[i];
+    const paths=(a.selectors || []).map(selector=>{const el=sec.querySelector(selector);if(!el)throw new Error(`No element matches ${selector}`);const path=[];let n=el;while(n!==sec){path.unshift([...n.parentElement.children].indexOf(n));n=n.parentElement;}return path;});
+    state.sel=stage.dek.edit.selectMany(paths);if(paths.length && !state.sel)throw new Error('The objects could not be selected');return TOOLS.get_selection();
+  },
+  async arrange_elements(a) {
+    await TOOLS.select_elements(a);const ed=stage.dek.edit;
+    if(a.action==='group'){if(state.sel?.count<2)throw new Error('Select at least two objects to group');ed.group();}else if(a.action==='ungroup')ed.ungroup();
+    else if(a.action==='lock'||a.action==='unlock')ed.lock(a.action==='lock');
+    else if(a.action==='front'||a.action==='back')ed.arrange(a.action);
+    else if(a.action==='resize')ed.setStyle({...((a.width>0)?{width:a.width+'px'}:{}),...((a.height>0)?{height:a.height+'px'}:{})});
+    else if(a.action==='nudge')ed.nudge(Number(a.x)||0,Number(a.y)||0);
+    else if(a.action==='distribute')ed.distribute(a.axis==='y'?'y':'x');
+    else if(['left','right','top','bottom','center','middle'].includes(a.action))ed.align(a.action);
+    else throw new Error('Unknown arrangement action');
+    return{result:{n:state.index+1},summary:`${a.action} elements`};
+  },
+  set_slide_visibility(a) {
+    const m=needDeck(),indices=(a.slides || [a.slide ?? state.index+1]).map(ref=>resolveSlide(m,ref,state.index));
+    applyRaw(slideOperations(m,indices,a.hidden?'hide':'show'),{label:a.hidden?'hide slides':'show slides'});
+    return {result:{slides:indices.map(i=>i+1),hidden:!!a.hidden},summary:a.hidden?'hid slides':'showed slides'};
+  },
+  batch_slides(a) {
+    const m=needDeck(),indices=(a.slides || []).map(ref=>resolveSlide(m,ref,state.index));
+    applyRaw(slideOperations(m,indices,a.action,{to:a.to===undefined?0:a.to-1,id:a.section_id}),{label:`agent: ${a.action} slides`});
+    return {result:{count:slideCount()},summary:`${a.action} slides`};
+  },
+  manage_section(a) {
+    if(a.action==='create'){const id=changeSection(null,{name:a.name});return{result:{id},summary:'created a section'};}
+    if(a.action==='rename'){changeSection(a.id,{name:a.name});return{result:{id:a.id},summary:'renamed section'};}
+    if(a.action==='remove'){
+      const m=needDeck(),indices=m.slides.filter(s=>s.section===a.id).map(s=>s.index);let raw=m.raw;
+      if(indices.length)raw=slideOperations(m,indices,'section',{id:null});
+      const next=parseDeck(raw),meta=documentMeta(next);meta.sections=meta.sections.filter(g=>g.id!==a.id);applyRaw(setDocumentMeta(next,meta),{label:'remove section'});return{result:{removed:a.id},summary:'removed section'};
+    }
+    if(a.action==='reorder'){const meta=documentMeta(needDeck()),from=meta.sections.findIndex(g=>g.id===a.id);if(from<0)throw new Error('Section not found');const[g]=meta.sections.splice(from,1);meta.sections.splice(clamp((a.to || 1)-1,0,meta.sections.length),0,g);applyRaw(reorderSections(model(),meta.sections),{label:'reorder sections'});return{result:{id:a.id},summary:'reordered section'};}
+    throw new Error('Use create, rename, reorder, or remove');
+  },
+  add_shape(a) {
+    const i=slideRef(a),html=elementOperations(needDeck().slides[i].html,[{type:'insert',target:':scope',html:shapeHTML(a)}]);
+    updateSlideHtml(i,html,'agent: add shape');return{result:{n:i+1},summary:'added shape',slide:i};
+  },
+  import_image(a) {
+    if(!a.src)throw new Error('Image could not be imported');const i=slideRef(a);
+    const html=`<img alt="${esc(a.alt || '')}" src="${esc(a.src)}" style="position:absolute;left:${Number(a.x)||240}px;top:${Number(a.y)||240}px;width:${Number(a.width)||800}px;height:auto;">`;
+    updateSlideHtml(i,elementOperations(needDeck().slides[i].html,[{type:'insert',target:':scope',html}]),'agent: import image');return{result:{n:i+1,src:a.src},summary:'imported image',slide:i};
+  },
+  undo() { undo();return{result:{undone:true},summary:'undid last edit'}; },
+  redo() { redo();return{result:{redone:true},summary:'redid last edit'}; },
+
   get_deck() {
     const m = needDeck();
     return { result: {
-      path: state.deck.path, name: state.deck.name, title: m.meta.title, size: m.meta.size,
+      revision:revision(), sections:documentMeta(m).sections, path: state.deck.path, name: state.deck.name, title: m.meta.title, size: m.meta.size,
       transition: m.meta.transition || settings.transition, count: m.slides.length, current: state.index + 1,
       slides: m.slides.map(slideSummary), components: componentRanges(m.raw).map((c) => ({ name: c.name, description: c.description, vars: c.vars })),
       theme: themeVars(m), presenting: state.presenting,
@@ -1394,20 +1526,22 @@ const TOOLS = {
   add_element(a) {
     const i = slideRef(a);
     if (!a.html) throw new Error('html is required');
-    updateSlideHtml(i, addElement(needDeck().slides[i].html, { html: a.html, position: a.position, selector: a.selector }), 'agent: add element');
+    updateSlideHtml(i, elementOperations(needDeck().slides[i].html,[{type:'insert',target:a.selector || ':scope',html:a.html,position:a.position}]), 'agent: add element');
     return { result: { n: i + 1 }, summary: `added an element to slide ${i + 1}`, slide: i };
   },
   update_element(a) {
     const i = slideRef(a);
     if (!a.selector) throw new Error('selector is required');
-    const r = updateElement(needDeck().slides[i].html, { selector: a.selector, html: a.html, inner: a.inner, text: a.text, attrs: a.attrs, style: a.style, addClass: a.add_class, removeClass: a.remove_class, all: !!a.all });
+    const targets=sourceTargets(needDeck().slides[i].html,a.selector,a.all);
+    const r={html:elementOperations(needDeck().slides[i].html,[{...a,type:'update',targets}]),count:targets.length};
     updateSlideHtml(i, r.html, 'agent: update element');
     return { result: { n: i + 1, updated: r.count }, summary: `updated ${r.count} element${r.count === 1 ? '' : 's'} (${a.selector}) on slide ${i + 1}`, slide: i };
   },
   delete_element(a) {
     const i = slideRef(a);
     if (!a.selector) throw new Error('selector is required');
-    const r = deleteElement(needDeck().slides[i].html, { selector: a.selector, all: !!a.all });
+    const targets=sourceTargets(needDeck().slides[i].html,a.selector,a.all);
+    const r={html:elementOperations(needDeck().slides[i].html,[{type:'delete',targets}]),count:targets.length};
     updateSlideHtml(i, r.html, 'agent: delete element');
     return { result: { n: i + 1, deleted: r.count }, summary: `deleted ${r.count} element${r.count === 1 ? '' : 's'} (${a.selector}) on slide ${i + 1}`, slide: i };
   },
@@ -1579,11 +1713,12 @@ const TOOLS = {
   },
   get_state() {
     const s = stage.state();
-    return { result: { open: !!state.deck, path: state.deck ? state.deck.path : null, current: state.index + 1, step: state.step, steps: s ? s.steps : 0, count: slideCount(), presenting: state.presenting, overview: state.overview, title: s ? s.title : '' } };
+    return { result: { open: !!state.deck, path: state.deck ? state.deck.path : null, current: state.index + 1, step: state.step, steps: s ? s.steps : 0, count: slideCount(), presenting: state.presenting, blackout:state.blackout, atEnd:state.atEnd, startedAt:state.presentationStartedAt || null, overview: state.overview, title: s ? s.title : '' } };
   },
   goto(a) {
     const i = slideRef(a);
-    goTo(i, a.step === 'last' ? 'last' : (a.step | 0));
+    if(state.presenting && model().slides[i].skip && !a.show_hidden)throw new Error('hidden_slide: pass show_hidden=true to show it explicitly');
+    goTo(i, a.step === 'last' ? 'last' : (a.step | 0),!!a.show_hidden);
     return { result: { current: i + 1 }, summary: `went to slide ${i + 1}`, slide: i };
   },
   navigate(a) {
@@ -1597,8 +1732,12 @@ const TOOLS = {
     needDeck();
     const action = a.action || 'start';
     if (action === 'start') setPresenting(true);
-    else if (action === 'from_start') { goTo(0); setPresenting(true); }
+    else if (action === 'from_start') { goTo(model()?.slides.findIndex(s=>!s.skip) ?? 0); setPresenting(true); }
     else if (action === 'stop') setPresenting(false);
+    else if (action === 'black')setBlackout('black');
+    else if (action === 'white')setBlackout('white');
+    else if (action === 'clear')setBlackout(null);
+    else if (action === 'reset_timer'){state.presentationStartedAt=Date.now();broadcastState();}
     else if (action === 'presenter') send({ type: 'presenter', open: true });
     else throw new Error('action must be start | from_start | stop | presenter');
     return { result: { presenting: state.presenting }, summary: `presentation ${action}` };
@@ -1649,28 +1788,54 @@ const TOOLS = {
   },
 };
 
-async function rpc(payload) {
+let rpcQueue=Promise.resolve();
+function rpc(payload) { const result=rpcQueue.then(()=>runRpc(payload)); rpcQueue=result.catch(()=>{}); return result; }
+async function waitForWrites() {
+  pumpSave();
+  const deadline=Date.now()+10000;
+  while(state.saving || state.pendingSave || state.rpcPending.size) {
+    if(state.conflict)throw new Error('revision_conflict: resolve the disk change first');
+    if(Date.now()>deadline)throw new Error('save_pending: disk has not acknowledged the previous edit; retry');
+    await new Promise(resolve=>setTimeout(resolve,20));
+  }
+}
+async function runRpc(payload) {
   let req;
   try { req = typeof payload === 'string' ? JSON.parse(payload) : payload; } catch { return JSON.stringify({ ok: false, error: 'bad request json' }); }
   const tool = req.tool;
   const args = req.args || {};
   const author = req.author || 'Agent';
-  state.inRpc = true;
-  state.rpcWrites = [];
+  let before=null;
   try {
+    const readOnly=/^(get_|list_|preview_|snapshot_|prepare_snapshot|export_deck|cancel_export)/.test(tool);
+    if(state.presenting && !readOnly && !['goto','navigate','present'].includes(tool)) throw new Error('presentation_active: stop presenting before editing');
+    if(!readOnly && !['goto','navigate','present','overview'].includes(tool)) {
+      if(state.conflict)throw new Error('revision_conflict: resolve the disk change first');
+      if(stage.ok)stage.dek.edit.commitText();
+      await waitForWrites();
+      if(args.revision!==undefined && args.revision!==revision())throw new Error('revision_conflict: read the deck again before editing');
+    }
+    before={raw:model()?.raw,history:{past:[...state.history.past],future:[...state.history.future]}};
+    state.inRpc=true;state.rpcWrites=[];
     const fn = TOOLS[tool];
     if (!fn) throw new Error(`Unknown tool: ${tool}`);
+    if(model() && ['goto','navigate','present','select_elements','arrange_elements'].includes(tool)){const deadline=Date.now()+5000;while(!stage.ok){if(Date.now()>deadline)throw new Error('renderer_pending: retry after the slide finishes loading');await new Promise(r=>setTimeout(r,20));}}
     const out = (await fn(args)) || {};
     state.agent.lastAuthor = author;
     state.agent.lastSeen = Date.now();
     if (out.summary) agentLog({ author, tool, summary: out.summary, slide: out.slide });
     else agentBadge();
-    const res = { ok: true, result: out.result === undefined ? null : out.result, writes: state.rpcWrites };
+    const writes=[...new Map(state.rpcWrites.map(w=>[w.path,w])).values()];
+    if(isNative)writes.forEach(w=>state.rpcPending.add(w.path));
+    const res = { ok: true, revision:revision(), result: out.result === undefined ? null : out.result, writes };
+    if(res.result && typeof res.result==='object' && !Array.isArray(res.result))res.result.revision=revision();
     if (out.open) res.open = out.open;
     return JSON.stringify(res);
   } catch (e) {
+    if(before?.raw && model()?.raw!==before.raw) { applyRaw(before.raw,{external:true,skipHistory:true});state.history=before.history; }
     agentLog({ author, tool, summary: `${tool}: ${e.message || e}`, error: true });
-    return JSON.stringify({ ok: false, error: String(e.message || e), writes: state.rpcWrites });
+    const error=String(e.message || e),code=error.split(':')[0];
+    return JSON.stringify({ ok: false, error, code, retryable:['presentation_active','save_pending','revision_conflict'].includes(code), revision:revision(), writes: [] });
   } finally {
     state.inRpc = false;
     state.rpcWrites = [];
@@ -1718,10 +1883,13 @@ function presenterLayout() {
 function presenterDeckLoaded() {
   const m = model();
   pv.stage.load(m, { index: state.index, step: state.step, baseHref: state.deck.baseHref, transition: 'none' });
-  if (!pv.startedAt) pv.startedAt = Date.now();
+  pv.startedAt=state.presentationStartedAt || null;
 }
 
 function presenterFollow(s) {
+  state.presenting=!!s.presenting;state.presentationStartedAt=s.startedAt;pv.startedAt=s.presenting?s.startedAt:null;if(s.timer!==undefined)settings.timer=s.timer;presenterTick();
+  if(!s.presenting && state.pendingExternal){const info=state.pendingExternal;state.pendingExternal=null;window.dekShell.fileChanged(info);}
+  els.pvtitle.dataset.blackout=s.blackout || '';
   if (!pv.stage || !pv.stage.ok) { state.index = s.index; state.step = s.step; return; }
   pv.stage.go(s.index, s.step);
 }
@@ -1830,8 +1998,10 @@ window.dekShell = {
   /** External change on disk (agent, editor, git): reload in place, keep the slide, make it undoable. */
   fileChanged(info) {
     if (!state.deck || info.path !== state.deck.path) return;
-    if (info.content === state.deck.model.raw) return;
-    if (state.presenting) { state.pendingExternal = info; return; } // never reflash the projected slide
+    if (info.content === state.deck.model.raw || info.content===state.persistedRaw) return;
+    if (state.presenting) { state.pendingExternal = info; return; }
+    if(state.saving || state.pendingSave || state.rpcPending.size || state.inRpc || stage.dek?.edit.selected()?.editingText) { state.pendingExternal=info; state.conflict=true; $('conflictbar').hidden=false; return; }
+    state.persistedRaw=info.content; // never reflash the projected slide
     const before = slideCount();
     applyRaw(info.content, { label: 'change on disk', external: true });
     if (!state.presenting) toast(slideCount() !== before ? `Reloaded · ${slideCount()} slides` : 'Reloaded');
@@ -1839,8 +2009,8 @@ window.dekShell = {
   },
   saved(info) {
     if (!state.deck || info.path !== state.deck.path) return;
-    setSaveState(info.ok ? 'saved' : 'error');
-    if (!info.ok) toast('Could not write the deck file');
+    if(info.ok) { state.persistedRaw=info.content || state.saving?.content || state.persistedRaw; state.saving=null; setSaveState('saved'); pumpSave(); }
+    else { state.pendingSave=state.pendingSave || state.saving; state.saving=null; state.conflict=!!info.conflict; setSaveState('error'); $('conflictbar').hidden=!info.conflict; toast(info.conflict?'File changed on disk. Save your copy or load the disk version.':'Could not save. Your edits are still here; retry Save or save a copy.'); }
   },
   closed() {
     state.deck = null;
@@ -1851,8 +2021,9 @@ window.dekShell = {
   },
   command,
   rpc,
-  getContent() { return state.deck ? state.deck.model.raw : null; },
-  state() { return JSON.stringify({ open: !!state.deck, path: state.deck ? state.deck.path : null, index: state.index, step: state.step, count: slideCount(), presenting: state.presenting }); },
+  getContent() { if(stage.ok)stage.dek.edit.commitText(); return state.deck ? state.deck.model.raw : null; },
+  async flushForDeparture() { if(stage.ok)stage.dek.edit.commitText();if(state.conflict)throw new Error('Save your recovered copy before closing.');await waitForWrites();return true; },
+  state() { return JSON.stringify({ revision:revision(), editing:state.editing, open: !!state.deck, path: state.deck ? state.deck.path : null, index: state.index, step: state.step, count: slideCount(), presenting: state.presenting }); },
   follow(s) { if (PRESENTER_MODE) presenterFollow(s); },
   nav(action) { command(action); },
   fullscreenChanged(on) {
@@ -1884,7 +2055,14 @@ window.dekShell = {
       agentLog({ author, tool: 'connect', summary: 'connected' });
     }
   },
+  prepareExport(options={}) { if(stage.ok)stage.dek.edit.commitText(); return {...exportManifest(needDeck(),options,state.deck.baseHref), inspector:inspectExportSlide.toString()}; },
+  writePowerPoint,
+  pasteContent,
   imagePicked,
+  toast,
+  exportProgress(info) { const el=$('exportstatus');el.hidden=false;el.innerHTML=`<span>${info.status==='writing'?'Writing file…':`Exporting ${info.completed} of ${info.total} slides…`}</span><button data-cancel-export="${esc(info.id)}">Cancel</button>`; },
+  exportResult(info) { const el=$('exportstatus');el.hidden=false;el.innerHTML=`<div><strong>${info.status==='cancelled'?'Export cancelled':info.error?esc(info.error):'Exported '+esc(info.path?.split('/').pop())}</strong>${info.warnings?.length?'<details><summary>'+info.warnings.length+' image fallbacks</summary>'+info.warnings.map(w=>'<p>'+esc(w)+'</p>').join('')+'</details>':''}</div>${info.path?'<button data-reveal-export="'+esc(info.path)+'">Show file</button>':''}<button data-dismiss-export aria-label="Dismiss export status">×</button>`; },
+  rpcSaved(info) { state.rpcPending.delete(info.path); if(info.path!==state.deck?.path)return; if(info.ok && info.content){state.persistedRaw=info.content;setSaveState('saved');pumpSave();} else if(!info.ok){state.conflict=!!info.conflict;state.pendingSave={path:info.path,content:model().raw};$('conflictbar').hidden=!info.conflict;setSaveState('error');toast(info.conflict?'File changed on disk. Save a copy or reload.':'Save failed. Your edits are retained; retry Save or save a copy.');} },
   imageDropped(info) { if (state.deck && info && info.path) { if (!state.editing) setEditing(true); send({ type: 'importImage', path: info.path }); } },
   snapshotRect() {
     const r = els.frame.getBoundingClientRect();
@@ -1929,12 +2107,148 @@ window.dekShell = {
 };
 const pdf = { active: false, index: 0, step: 0 };
 
+// ---------- authoring workspace ----------
+function selectSlide(i,e={}) {
+  if(stage.ok)stage.dek.edit.commitText();
+  if(e.shiftKey) { const from=Math.min(state.selectionAnchor,i),to=Math.max(state.selectionAnchor,i);state.selectedSlides=new Set(Array.from({length:to-from+1},(_,n)=>from+n)); }
+  else if(e.metaKey || e.ctrlKey) { if(state.selectedSlides.has(i))state.selectedSlides.delete(i);else state.selectedSlides.add(i); }
+  else { state.selectedSlides=new Set([i]);state.selectionAnchor=i; }
+  goTo(i);renderSlideManagement();
+}
+const selectedSlides=()=>[...state.selectedSlides].filter(i=>model()?.slides[i]).sort((a,b)=>a-b);
+function batchSlides(action,indices=selectedSlides(),options={}) {
+  if(!indices.length && model()?.slides[state.index])indices=[state.index];
+  if(!indices.length)return;
+  if(stage.ok)stage.dek.edit.commitText();
+  try {
+    const raw=slideOperations(model(),indices,action,options);
+    if(action==='section'){const ids=indices.map(i=>model().slides[i].id);indices=parseDeck(raw).slides.filter(s=>ids.includes(s.id)).map(s=>s.index);}
+    const focus=action==='duplicate'?Math.max(...indices)+1:action==='move'?options.to:Math.min(...indices);
+    state.selectedSlides=new Set(action==='duplicate'||action==='move'?indices.map((_,n)=>focus+n):action==='delete'?[Math.min(focus,Math.max(0,parseDeck(raw).slides.length-1))]:indices);
+    applyRaw(raw,{label:`${action} ${indices.length} slide${indices.length===1?'':'s'}`,focusIndex:focus});
+    toast(`${indices.length} slide${indices.length===1?'':'s'} ${ {hide:'hidden',show:'shown',delete:'deleted',duplicate:'duplicated',move:'moved',section:'organized'}[action] || 'updated'}`,'⌘Z');
+  }catch(e){toast(e.message);}
+}
+function renderSlideManagement() {
+  if(!model()) { $('slideactions').innerHTML='';$('sectionlist').innerHTML='';return; }
+  const indices=selectedSlides(), hidden=indices.length && indices.every(i=>model().slides[i].skip);
+  $('slideactions').innerHTML=`<button data-batch="${hidden?'show':'hide'}">${hidden?'Show':'Hide'}</button><button data-batch="duplicate">Duplicate</button><button data-batch="more" aria-label="More slide actions">•••</button><span>${indices.length>1?indices.length+' selected':''}</span>`;
+  $('overviewactions').innerHTML=$('slideactions').innerHTML;
+  const query=$('slidesearch').value.toLowerCase();
+  let sections=[];try{sections=documentMeta(model()).sections || [];}catch{}
+  for(const list of [thumbs,ovThumbs]) for(const [i,it] of list.items.entries()) {
+    const slide=model().slides[i], group=sections.find(g=>g.id===slide?.section);
+    it.el.classList.toggle('selected',state.selectedSlides.has(i));
+    it.el.hidden=!!query && !`${i+1} ${slide?.title}`.toLowerCase().includes(query) || !!group?.collapsed && !query;
+    it.el.tabIndex=i===state.index?0:-1;
+    it.el.setAttribute('aria-selected',String(state.selectedSlides.has(i)));
+    let more=it.el.querySelector('.thumb-more');
+    if(!more) { more=document.createElement('button');more.className='thumb-more';more.textContent='•••';more.setAttribute('aria-label','Slide actions');more.addEventListener('click',e=>{e.stopPropagation();openContextMenu(+it.el.dataset.index,e.clientX,e.clientY);});it.el.append(more); }
+  }
+  for(const list of [thumbs,ovThumbs]) {const root=list===thumbs?els.thumbs:els.ovgrid;root.querySelectorAll('.thumb-section').forEach(n=>n.remove());const seen=new Set();for(const [i,it] of list.items.entries()){const group=sections.find(g=>g.id===model().slides[i]?.section);if(group && !seen.has(group.id)){seen.add(group.id);const label=document.createElement('button');label.className='thumb-section';label.textContent=(group.collapsed?'▸ ':'▾ ')+group.name;label.addEventListener('click',()=>changeSection(group.id,{collapsed:!group.collapsed}));it.el.before(label);}}}
+  $('sectionlist').innerHTML=sections.map(g=>`<div class="section-row"><button data-section-toggle="${esc(g.id)}" aria-expanded="${!g.collapsed}">${g.collapsed?'▸':'▾'} ${esc(g.name)} <small>${model().slides.filter(s=>s.section===g.id).length}</small></button><button data-section-edit="${esc(g.id)}" aria-label="Edit section ${esc(g.name)}">•••</button></div>`).join('');
+  if(!model().slides.length) { els.empty.classList.add('show');els.empty.querySelector('.empty-hint').innerHTML='This deck has no slides. Add one to get started.'; }
+}
+function changeSection(id,patch={}) {
+  const m=model(),meta=documentMeta(m);meta.sections=meta.sections || [];
+  if(id && !meta.sections.some(g=>g.id===id))throw new Error('Section no longer exists');
+  if(!id){id='section-'+crypto.randomUUID();meta.sections.push({id,name:patch.name || 'Untitled section',collapsed:false});}
+  else if(patch.remove)meta.sections=meta.sections.filter(g=>g.id!==id);
+  else Object.assign(meta.sections.find(g=>g.id===id),patch);
+  applyRaw(setDocumentMeta(m,meta),{label:patch.remove?'remove section':'section settings'});
+  return id;
+}
+function popover(html,anchor=$('deckname')) {
+  const el=$('workspacepopover');el.innerHTML=html;el.hidden=false;
+  const r=anchor.getBoundingClientRect();el.style.left=Math.max(8,Math.min(window.innerWidth-340,r.left))+'px';el.style.top=Math.min(window.innerHeight-260,r.bottom+8)+'px';
+  requestAnimationFrame(()=>el.querySelector('input,button,select')?.focus());
+}
+function showInsertMenu(kind) {
+  const choices=kind==='shape'?['rectangle','rounded','ellipse','line','arrow','triangle']:['blank','title','content','split','quote'];
+  popover(`<h2>${kind==='shape'?'Add a shape':'Add a slide'}</h2><div class="layout-options">${choices.map(v=>`<button data-add-${kind}="${v}">${v==='split'?'Two columns':v[0].toUpperCase()+v.slice(1)}</button>`).join('')}</div>`,kind==='shape'?els.insertbar:els.addslide);
+}
+function showSlideMenu() {
+  popover(`<h2>${selectedSlides().length || 1} selected</h2><button data-batch="copy">Copy slides</button><button data-batch="up">Move up</button><button data-batch="down">Move down</button><button data-batch="section">Move to section…</button><button data-batch="newsection">Create section…</button><button data-batch="delete" class="danger">Delete slides</button>`,state.overview?$('overviewactions'):$('slideactions'));
+}
+function showExportMenu() {
+  popover(`<h2>Export deck</h2><label>Format<select id="exportformat"><option value="pptx-editable">PowerPoint · editable</option><option value="pptx-image">PowerPoint · preserve appearance</option><option value="pdf">PDF</option></select></label><label class="check"><input id="exporthidden" type="checkbox">Include hidden slides</label><p class="field-hint">Editable PowerPoint keeps standard text, shapes and images editable. Complex visuals become images. Animations export as stills.</p><button class="wide-button primary" data-workspace="export">Export…</button><div id="exportprogress" role="status"></div>`,$('exportbtn'));
+}
+function readImageFile(file) {
+  if(!state.deck){toast('Open or create a deck before adding an image');return;}
+  if(file.size>30*1024*1024){toast('Choose an image smaller than 30 MB');return;}
+  const r=new FileReader();r.onload=()=>{
+    if(isNative)send({type:'importImageData',data:r.result,name:file.name || 'Pasted image.png'});
+    else imagePicked({src:r.result,name:file.name});
+  };r.readAsDataURL(file);
+}
+function clipboardPayload() {
+  if(!state.deck)return;
+  let payload;
+  if(state.editing && state.sel && stage.ok) {
+    stage.dek.edit.commitText();
+    const sec=new DOMParser().parseFromString(model().slides[state.index].html,'text/html').querySelector('section');
+    const paths=state.sel.paths || [state.sel.path];
+    payload={kind:'dek-elements',html:paths.map(p=>sec.querySelector(pathTarget(p))?.outerHTML || '').join(''),source:state.deck.path};
+  } else payload={kind:'dek-slides',html:selectedSlides().map(i=>model().slides[i].html).join('\n'),source:state.deck.path,head:transferHead(model())};
+  return payload;
+}
+function copySelection(cut=false) {
+  const payload=clipboardPayload();if(!payload)return;
+  navigator.clipboard.writeText(JSON.stringify(payload)).then(()=>{if(cut){if(payload.kind==='dek-elements')stage.dek.edit.deleteSelected();else batchSlides('delete');}toast(cut?'Cut to clipboard':'Copied');},()=>toast('Clipboard is unavailable'));
+}
+function onCopy(e) {
+  if(state.presenting || e.target?.isContentEditable || ['INPUT','TEXTAREA'].includes(e.target?.tagName))return;
+  const payload=clipboardPayload();if(!payload || !e.clipboardData)return;
+  e.preventDefault();e.clipboardData.setData('text/plain',JSON.stringify(payload));
+  if(e.type==='cut'){if(payload.kind==='dek-elements')stage.dek.edit.deleteSelected();else batchSlides('delete');}
+}
+for(const type of ['copy','cut']){window.addEventListener(type,onCopy);stage.on(type,onCopy);}
+function pasteContent(payload) {
+  if(payload?.document){const doc=parseDeck(payload.document);payload={...payload,html:doc.bodyInner,head:doc.headInner};}
+  if(!state.deck || !payload?.html)return;
+  if(payload.kind==='dek-elements') {insertHtml(payload.html);return;}
+  applyRaw(copySlidesInto(model(),payload,state.index+1),{label:'paste slides',focusIndex:state.index+1});
+}
+function onPaste(e) {
+  if(e.target?.isContentEditable || ['INPUT','TEXTAREA'].includes(e.target?.tagName))return;
+  const image=Array.from(e.clipboardData?.items || []).find(it=>it.type.startsWith('image/'));
+  if(image){e.preventDefault();readImageFile(image.getAsFile());return;}
+  try {const p=JSON.parse(e.clipboardData?.getData('text/plain') || '');if(['dek-slides','dek-elements'].includes(p.kind)){e.preventDefault();if(isNative && p.source!==state.deck?.path)send({type:'preparePaste',payload:p,destination:state.deck?.path});else pasteContent(p);}}catch{}
+}
+window.addEventListener('paste',onPaste);
+stage.on('paste',onPaste);
+$('slidesearch').addEventListener('input',renderSlideManagement);
+$('overviewactions').addEventListener('click',e=>{const a=e.target.closest('[data-batch]')?.dataset.batch;if(a==='more')showSlideMenu();else if(a)batchSlides(a);});
+$('slideactions').addEventListener('click',e=>{const action=e.target.closest('[data-batch]')?.dataset.batch;if(action==='more')showSlideMenu();else if(action)batchSlides(action);});
+$('sectionlist').addEventListener('click',e=>{
+  const toggle=e.target.closest('[data-section-toggle]');if(toggle){const g=documentMeta(model()).sections.find(g=>g.id===toggle.dataset.sectionToggle);changeSection(g.id,{collapsed:!g.collapsed});return;}
+  const edit=e.target.closest('[data-section-edit]');if(edit){const g=documentMeta(model()).sections.find(g=>g.id===edit.dataset.sectionEdit);popover(`<h2>Section</h2><label>Name<input id="sectionname" value="${esc(g.name)}"></label><button data-section-save="${g.id}">Save name</button><button data-section-move="${g.id}" data-direction="-1">Move up</button><button data-section-move="${g.id}" data-direction="1">Move down</button><button data-section-remove="${g.id}">Remove section, keep slides</button>`,edit);}
+});
+$('deckname').addEventListener('click',()=>popover('<h2>Deck</h2><button data-workspace="new">New deck… <kbd>⌘N</kbd></button><button data-workspace="open">Open… <kbd>⌘O</kbd></button><button data-workspace="duplicate">Duplicate deck…</button><button data-workspace="rename">Edit title</button><button data-workspace="overview">Slide overview</button><button data-workspace="presenter">Presenter view</button><button data-workspace="agent">Work with an agent</button>'));
+$('exportbtn').addEventListener('click',showExportMenu);
+$('workspacepopover').addEventListener('click',e=>{
+  const b=e.target.closest('button');if(!b)return;
+  const pop=$('workspacepopover');
+  if(b.dataset.addShape){pop.hidden=true;insertHtml(shapeHTML({shape:b.dataset.addShape}));}
+  else if(b.dataset.addSlide){pop.hidden=true;addSlideAfter(state.index,layoutHTML(b.dataset.addSlide));}
+  else if(b.dataset.workspace){const action=b.dataset.workspace;if(action==='export'){const [format,mode]=$('exportformat').value.split('-');send({type:'exportDeck',format,mode:mode || 'editable',includeHidden:$('exporthidden').checked});pop.hidden=true;return;}pop.hidden=true;({new:()=>send({type:'newDeck'}),open:()=>send({type:'openDialog'}),duplicate:()=>send({type:'saveAs'}),rename:()=>{setEditing(true);stage.dek.edit.clear();requestAnimationFrame(()=>$('inspector').querySelector('[data-field="title"]')?.focus());},overview:()=>setOverview(true),presenter:()=>send({type:'presenter',open:true}),agent:()=>setAgentOpen(true)})[action]?.();}
+  else if(b.dataset.batch){const a=b.dataset.batch;pop.hidden=true;if(a==='copy')copySelection();else if(a==='up'||a==='down'){const ids=selectedSlides();batchSlides('move',ids,{to:Math.max(0,Math.min(...ids)+(a==='up'?-1:1))});}else if(a==='section'){popover('<h2>Move to section</h2>'+documentMeta(model()).sections.map(g=>`<button data-move-section="${g.id}">${esc(g.name)}</button>`).join('')+'<button data-move-section="">No section</button>');}else if(a==='newsection'){popover('<h2>Create section</h2><label>Name<input id="sectionname" value="Untitled section"></label><button data-create-section="true">Create and add selected slides</button>');}else batchSlides(a);}
+  else if(b.hasAttribute('data-move-section')){batchSlides('section',selectedSlides(),{id:b.dataset.moveSection});pop.hidden=true;}
+  else if(b.dataset.createSection){const meta=documentMeta(model()),id='section-'+crypto.randomUUID();meta.sections.push({id,name:$('sectionname').value.trim() || 'Untitled section',collapsed:false});let m=parseDeck(setDocumentMeta(model(),meta));const ids=selectedSlides();const raw=ids.length?slideOperations(m,ids,'section',{id}):m.raw;applyRaw(raw,{label:'create section with slides'});pop.hidden=true;}
+  else if(b.dataset.sectionSave){changeSection(b.dataset.sectionSave,{name:$('sectionname').value.trim() || 'Untitled section'});pop.hidden=true;}
+  else if(b.dataset.sectionRemove){TOOLS.manage_section({action:'remove',id:b.dataset.sectionRemove});pop.hidden=true;}
+  else if(b.dataset.sectionMove){const meta=documentMeta(model()),i=meta.sections.findIndex(g=>g.id===b.dataset.sectionMove),to=Math.max(0,Math.min(meta.sections.length-1,i+Number(b.dataset.direction)));const [g]=meta.sections.splice(i,1);meta.sections.splice(to,0,g);applyRaw(reorderSections(model(),meta.sections),{label:'reorder sections'});pop.hidden=true;}
+});
+$('conflictbar').addEventListener('click',e=>{const a=e.target.dataset.conflict;if(a==='copy')send({type:'saveAs'});else if(a==='reload'){if(stage.ok)stage.dek.edit.cancelText();state.pendingSave=null;state.saving=null;state.conflict=false;$('conflictbar').hidden=true;if(state.pendingExternal){const info=state.pendingExternal;state.pendingExternal=null;window.dekShell.fileChanged(info);}else send({type:'reload'});}});
+document.addEventListener('mousedown',e=>{if(!e.target.closest('#workspacepopover,#deckname,#exportbtn,#slideactions,#sectionlist,#insertbar,#addslide'))$('workspacepopover').hidden=true;});
+
+
 // ---------- wiring ----------
 
 els.presentbtn.addEventListener('click', () => setPresenting(true));
 els.counter.addEventListener('click', () => palette.open());
 els.navtoggle.addEventListener('click', () => setNavOpen(!state.navOpen));
-els.addslide.addEventListener('click', () => { if (state.deck) addSlideAfter(state.index); else send({ type: 'newDeck' }); });
+els.addslide.addEventListener('click', () => { if (state.deck) showInsertMenu('slide'); else send({ type:'newDeck' }); });
 els.samplebtn.addEventListener('click', () => send({ type: 'openSample' }));
 els.blackout.addEventListener('click', () => { if (state.atEnd && state.presenting) setPresenting(false); else setBlackout(null); });
 els.overview.addEventListener('click', (e) => { if (e.target === els.overview) setOverview(false); });
@@ -1950,6 +2264,7 @@ window.addEventListener('drop', (e) => {
   dragDepth = 0;
   document.body.classList.remove('dropping');
   const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if(f && !isNative && f.type.startsWith('image/')) { readImageFile(f); return; }
   if (f && !isNative) f.text().then((text) => window.dekShell.load({ name: f.name, path: '/dropped/' + f.name, content: text, baseHref: '' }));
 });
 
@@ -1971,3 +2286,7 @@ if (PRESENTER_MODE) {
 window.__dek = { state, settings, stage, thumbs, model, command, rpc, themes: { list: themeList, active: activeTheme, apply: applyThemeToDeck } }; // QA handle
 send({ type: 'ready', presenter: PRESENTER_MODE });
 if (!PRESENTER_MODE) send({ type: 'themesLoad' });
+
+$('exportstatus').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.cancelExport)send({type:'cancelExport',id:b.dataset.cancelExport});if(b.dataset.revealExport)send({type:'revealExport',path:b.dataset.revealExport});if(b.hasAttribute('data-dismiss-export'))$('exportstatus').hidden=true;});
+
+$('emptyslide').addEventListener('click',()=>addSlideAfter(-1,layoutHTML('blank')));

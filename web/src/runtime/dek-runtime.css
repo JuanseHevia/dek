@@ -178,3 +178,7 @@ html.dek-html { display: block; overflow: hidden; width: 100%; height: 100%; }
 .dek-editing-text { outline: none !important; caret-color: var(--dek-edit); }
 .dek-editing [data-orbit] { animation: none; }
 .dek-editing .dek-tilt { transition: none; transform: none !important; }
+/* Secondary selections use the same restrained outline as the active object. */
+.dek-editing [data-dek-selected] {outline:2px solid oklch(0.83 0.12 82);outline-offset:3px;}
+.dek-editing [data-dek-locked] {cursor:not-allowed;}
+.dek-group {box-sizing:border-box;}

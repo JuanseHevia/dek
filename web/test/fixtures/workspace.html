@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Workspace acceptance</title>
+<meta name="dek-size" content="1280x720">
+<style>
+:root { --bg:#f4f2ee; --fg:#242424; font-family:Arial,sans-serif; }
+section { background:#f4f2ee;color:#242424; }
+h1 { position:absolute;left:80px;top:80px;font:60px Arial;margin:0;width:1080px; }
+p { position:absolute;left:80px;top:180px;font:30px Arial;margin:0;width:1080px; }
+</style>
+<template data-dek-component="badge"><div style="padding:20px;background:#eadab1">Reusable <b>{{label}}</b></div></template>
+</head><body>
+<!-- keep this source comment -->
+<section id="intro"><h1 data-id="heading">Build better slides</h1><p>Edit these individual words.</p><aside class="notes">Opening note: editable text.</aside></section>
+<section id="hidden" data-dek-skip><h1>Hidden appendix</h1><p>This page is omitted by default.</p><aside class="notes">Only show explicitly.</aside></section>
+<section id="objects"><h1>Objects and images</h1><div class="dek-shape" data-shape="rectangle" style="position:absolute;left:80px;top:240px;width:200px;height:140px;background:#c9993f;border:3px solid #242424"></div><div class="dek-shape" data-shape="ellipse" style="position:absolute;left:350px;top:240px;width:160px;height:160px;border-radius:50%;background:#3f7791"></div><img src="photo.svg" alt="Colored landscape" style="position:absolute;left:700px;top:230px;width:400px;height:250px;object-fit:cover"><aside class="notes">Two editable shapes and a cropped image.</aside></section>
+<section id="fragments"><h1>Reveal in order</h1><p class="fragment">First fragment.</p><p class="fragment" style="top:270px">Final fragment.</p><aside class="notes">Both fragments appear in exports.</aside></section>
+<section id="complex"><h1>Preserve HTML</h1><div data-dek-use="badge" data-label="component" style="position:absolute;left:80px;top:240px;width:450px"></div><svg style="position:absolute;left:700px;top:240px" width="260" height="200" viewBox="0 0 260 200"><path d="M10 180 Q130 -120 250 180" fill="none" stroke="#3f7791" stroke-width="12"/></svg><aside class="notes">Complex visuals use named image fallbacks.</aside></section>
+</body></html>

@@ -17,6 +17,9 @@
         <span id="navtitle" class="nav-title">Slides</span>
         <span id="navcount" class="nav-count"></span>
       </div>
+      <label class="slide-search"><span class="sr-only">Search slides</span><input id="slidesearch" type="search" placeholder="Find a slide" aria-label="Search slides"></label>
+      <div id="slideactions" class="slide-actions"></div>
+      <div id="sectionlist" class="section-list"></div>
       <div id="thumbs" class="thumbs" role="listbox" aria-label="Slides"></div>
       <div id="dslist" class="dslist" role="listbox" aria-label="Design systems" hidden></div>
       <p id="dsempty" class="ds-empty" hidden>No design systems yet.<br>Capture the look this deck already has, or ask Claude Code to design one with you.</p>
@@ -47,13 +50,14 @@
         <button id="navtoggle" class="pillbtn iconbtn" title="Slides (⌘\)" aria-label="Toggle slide navigator">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><rect x="1.5" y="2.5" width="11" height="9" rx="1.5"/><path d="M5.5 2.5v9"/></svg>
         </button>
-        <span id="deckname" class="deckname">Dek</span>
+        <button id="deckname" class="deckname" title="Deck actions" aria-haspopup="menu">Dek</button>
         <span id="savestate" class="savestate" data-state="idle" aria-live="polite"></span>
         <span class="pill-spacer"></span>
         <button id="counter" class="pillbtn counter" title="Go to slide (⌘P)">– / –</button>
         <button id="designbtn" class="pillbtn designbtn" title="Design systems (⌥⌘D)" aria-haspopup="true"><span id="designswatch" class="theme-swatch mini" aria-hidden="true"></span><span id="designlabel" class="designlabel">Design</span></button>
         <button id="agentbtn" class="pillbtn agentbtn" title="Agent activity (⌘J)"><span class="dot"></span><span class="agentlabel">Agent</span></button>
         <button id="editbtn" class="pillbtn" title="Edit slide elements (⌘E)">Edit</button>
+        <button id="exportbtn" class="pillbtn" aria-haspopup="true">Export</button>
         <button id="presentbtn" class="pillbtn primary" title="Present (⌘⏎)">Present</button>
       </header>
 
@@ -66,6 +70,7 @@
           <button data-insert="heading" title="Insert a heading (⌥⌘H)"><span class="ins-glyph">H</span>Heading</button>
           <button data-insert="text" title="Insert a text box (⌥⌘T)"><span class="ins-glyph">T</span>Text</button>
           <button data-insert="image" title="Insert an image (⌥⌘I)"><span class="ins-glyph">▣</span>Image</button>
+          <button data-insert="shape" title="Insert shape">◯ Shape</button>
           <span class="ins-hint">Click to select · drag to move · ⏎ or double-click to edit text · ⌫ deletes</span>
         </div>
       </div>
@@ -75,9 +80,10 @@
         <p class="empty-mark">dek</p>
         <p class="empty-hint">Open an HTML deck <kbd>⌘O</kbd> · New deck <kbd>⌘N</kbd></p>
         <p class="empty-hint faint">or drop an .html file anywhere on this window</p>
+        <button id="emptyslide" class="wide-button" hidden>Create the first slide</button>
         <ul id="recent" class="recent"></ul>
         <button id="samplebtn" class="linkbtn">Open the Welcome deck</button>
-        <p class="empty-agent">Agents write decks over MCP: <button id="emptyagentbtn" class="linkbtn inline">connect Claude Code</button></p>
+        <p class="empty-agent">Agents write decks over MCP: <button id="emptyagentbtn" class="linkbtn inline">connect an agent</button></p>
       </div>
 
       <section id="compose" class="compose" hidden aria-label="Design system">
@@ -98,6 +104,7 @@
       </section>
 
       <div id="overview" class="overview" hidden aria-label="Light table">
+        <div id="overviewactions" class="slide-actions" aria-label="Selected slides"></div>
         <div id="ovgrid" class="ovgrid" role="listbox"></div>
       </div>
 
@@ -213,6 +220,7 @@
       </section>
     </main>
 
+    <aside id="inspector" class="inspector" aria-label="Slide inspector" hidden></aside>
     <aside id="agent" class="agent" aria-label="Agent activity">
       <div class="agent-inner">
         <div class="agent-head">
@@ -223,11 +231,13 @@
           </button>
         </div>
         <div id="agentlist" class="agent-list"></div>
-        <p id="agentempty" class="agent-empty">Nothing yet. <button id="agentsetup" class="linkbtn inline">Connect Claude Code or Claude Desktop</button>, then ask it to work on this deck. Every change it makes shows up here and lands in the file at once; ⌘Z undoes.</p>
+        <p id="agentempty" class="agent-empty">Nothing yet. <button id="agentsetup" class="linkbtn inline">Connect Codex, Claude, or another agent</button>, then ask it to work on this deck. Every change it makes shows up here and lands in the file at once; ⌘Z undoes.</p>
       </div>
     </aside>
   </div>
 
+  <section id="workspacepopover" class="workspace-popover" hidden aria-label="Deck actions"></section>
+  <div id="conflictbar" class="conflict-bar" hidden role="alert"><span>Your file changed on disk. Your edits are kept in this window.</span><button data-conflict="copy">Save my copy…</button><button data-conflict="reload">Load disk version</button></div>
   <div id="ctxmenu" class="ctxmenu" hidden role="menu"></div>
 
   <div id="shortcuts" class="shortcuts" hidden role="dialog" aria-label="Keyboard shortcuts">
@@ -287,6 +297,7 @@
     </div>
   </div>
 
+  <div id="exportstatus" class="export-status" hidden role="status" aria-live="polite"></div>
   <div id="toast" class="toast" hidden role="status"></div>
 
   <div id="presenter" class="presenter" hidden>

@@ -71,6 +71,8 @@
     const all = $$('section').filter((el) => !el.parentElement.closest('section'));
     all.forEach((el, i) => {
       el.classList.add('dek-slide');
+      el.setAttribute('aria-hidden','true');
+      el.inert=true;
       el.dataset.dekIndex = String(i);
       prepareFragments(el);
     });
@@ -113,7 +115,7 @@
 
   function notesOf(sec) {
     const n = sec.querySelector('aside.notes, .notes');
-    if (n) return { html: n.innerHTML.trim(), text: n.textContent.replace(/\s+/g, ' ').trim() };
+    if (n) {const plain=n.cloneNode(true);for(const br of plain.querySelectorAll('br'))br.replaceWith(document.createTextNode('\n'));for(const b of plain.querySelectorAll('p,div,li'))b.append(document.createTextNode('\n'));return { html: n.innerHTML.trim(), text: plain.textContent.trim() };}
     const attr = sec.getAttribute('data-speaker-notes'); // Claude Design decks
     if (attr) { const text = attr.replace(/\s+/g, ' ').trim(); const el = document.createElement('div'); el.textContent = text; return { html: el.innerHTML, text }; }
     return { html: '', text: '' };
@@ -148,7 +150,7 @@
   const isSkipped = (i) => { const s = S.sections[i]; return !!s && (s.hasAttribute('data-dek-skip') || s.hasAttribute('data-deck-skip')); };
   // next/prev slide that is not skipped (skipped slides stay reachable through go())
   function neighbor(from, dir) {
-    for (let i = from + dir; i >= 0 && i < S.sections.length; i += dir) if (!isSkipped(i)) return i;
+    for (let i = from + dir; i >= 0 && i < S.sections.length; i += dir) if (S.opts.skipHidden === false || !isSkipped(i)) return i;
     return -1;
   }
 
@@ -205,11 +207,13 @@
 
     if (from && from !== to) {
       from.classList.remove('present');
+      from.setAttribute('aria-hidden','true');from.inert=true;
       from.classList.add('dek-leaving');
       markActive(from, false);
       onLeave(from);
     }
     to.classList.add('present');
+    to.removeAttribute('aria-hidden');to.inert=false;
     to.classList.remove('dek-leaving');
     if (!isStatic()) markActive(to, true);
 
@@ -754,8 +758,8 @@
   // the shell writes the same change into the file. The live DOM stays as the
   // source of what the user sees; no reload happens.
 
-  const EDIT = { on: false, sel: null, box: null, hover: null, drag: null, resize: null, textEl: null, textBackup: '' };
-  const ATOMIC_SEL = '.dek-instance,[data-dek-use],.dek-chart,.dek-cube,.dek-scene,figure,table,pre,video,canvas,iframe,svg,img,.dek-atomic';
+  const EDIT = { on: false, sel: null, box: null, hover: null, drag: null, resize: null, textEl: null, textBackup: '', textSaved: '', range: null, keepText: false, textTimer: null, multi: [], snap: true };
+  const ATOMIC_SEL = '.dek-shape,.dek-instance,[data-dek-use],.dek-chart,.dek-cube,.dek-scene,figure,table,pre,video,canvas,iframe,svg,img,.dek-atomic';
   const TEXT_SEL = 'h1,h2,h3,h4,h5,h6,p,blockquote,ul,ol,li,.dek-text';
   const TEXT_TAGS = /^(H[1-6]|P|BLOCKQUOTE|UL|OL|LI|DIV|SPAN|FIGCAPTION|SMALL|LABEL|DT|DD)$/;
 
@@ -795,6 +799,8 @@
 
   function kindOf(el) {
     if (!el) return 'block';
+    if(el.matches('.dek-group')) return 'group';
+    if (el.matches('.dek-shape,[data-shape]')) return 'shape';
     if (el.matches('.dek-instance,[data-dek-use]')) return 'component';
     if (el.matches('img,video,canvas,svg,iframe') || (el.tagName === 'FIGURE' && el.querySelector('img,video'))) return 'image';
     if (el.matches('.dek-chart')) return 'chart';
@@ -807,6 +813,11 @@
     const sec = currentSection();
     const a = sec.getBoundingClientRect(), b = el.getBoundingClientRect(), z = S.zoom || 1;
     return { x: (b.left - a.left) / z, y: (b.top - a.top) / z, w: b.width / z, h: b.height / z };
+  }
+  function layoutRect(el, parent=currentSection()) {
+    const r=slideRect(el),p=parent===currentSection()?{x:0,y:0}:slideRect(parent),cs=getComputedStyle(el);
+    const w=el.offsetWidth,h=el.offsetHeight;
+    return {x:r.x-p.x+(r.w-w)/2,y:r.y-p.y+(r.h-h)/2,w,h,rotate:parseFloat(cs.rotate)||0};
   }
 
   function ensureBoxes() {
@@ -830,6 +841,7 @@
     box.style.height = r.h + 'px';
   }
   function labelFor(el) {
+    if (el.dataset.shape) return el.dataset.shape;
     if (el.dataset.dekUse) return el.dataset.dekUse;
     if (el.classList.contains('dek-chart')) return 'chart';
     if (el.classList.contains('dek-instance')) return 'component';
@@ -842,7 +854,9 @@
     if (!EDIT.sel.isConnected) { select(null); return; }
     ensureBoxes();
     positionBox(EDIT.box, EDIT.sel);
-    EDIT.box.querySelector('.dek-sel-label').textContent = labelFor(EDIT.sel);
+    EDIT.box.querySelector('.dek-sel-label').textContent = EDIT.multi.length>1 ? `${EDIT.multi.length} selected` : labelFor(EDIT.sel)+(EDIT.sel.hasAttribute('data-dek-locked')?' · locked':'');
+    for(const n of document.querySelectorAll('[data-dek-selected]'))n.removeAttribute('data-dek-selected');
+    EDIT.multi.filter(n=>n!==EDIT.sel).forEach(n=>n.setAttribute('data-dek-selected',''));
     EDIT.box.style.display = 'block';
   }
   function selInfo() {
@@ -850,20 +864,33 @@
     if (!el || !el.isConnected) return null;
     const cs = getComputedStyle(el);
     const r = el.getBoundingClientRect();
+    const anchor=EDIT.range?.startContainer;
+    const tc=EDIT.textEl && anchor && EDIT.textEl.contains(anchor)?getComputedStyle(anchor.nodeType===1?anchor:anchor.parentElement):cs;
     return {
-      path: pathOf(el), tag: el.tagName.toLowerCase(), kind: kindOf(el), label: labelFor(el),
+      id:el.dataset.dekId || null, paths:EDIT.multi.filter(n=>n.isConnected).map(pathOf), count:EDIT.multi.length, locked:el.hasAttribute('data-dek-locked'), aspect:el.dataset.dekAspect!=='free', objectPosition:cs.objectPosition, link:el.querySelector('a')?.getAttribute('href') || '', path: pathOf(el), tag: el.tagName.toLowerCase(), kind: kindOf(el), label: labelFor(el),
       rect: { x: r.left, y: r.top, w: r.width, h: r.height },
       textAlign: cs.textAlign, fontSizeRem: Math.round((parseFloat(cs.fontSize) / 32) * 100) / 100,
       translate: el.style.translate || '', editingText: EDIT.textEl === el,
       src: el.tagName === 'IMG' ? el.getAttribute('src') : undefined,
+      geometry: slideRect(el), width: parseFloat(cs.width) || el.offsetWidth, height: parseFloat(cs.height) || el.offsetHeight,
+      fontFamily: tc.fontFamily, fontSize: parseFloat(tc.fontSize), fontWeight: tc.fontWeight,
+      fontStyle: tc.fontStyle, color: tc.color, backgroundColor: tc.backgroundColor,
+      textDecoration: cs.textDecorationLine, textTransform: cs.textTransform,
+      lineHeight: cs.lineHeight === 'normal' ? 1.2 : parseFloat(cs.lineHeight) / parseFloat(cs.fontSize),
+      letterSpacing: parseFloat(cs.letterSpacing) || 0, opacity: parseFloat(cs.opacity),
+      borderColor: cs.borderTopColor, borderWidth: parseFloat(cs.borderTopWidth), borderRadius: parseFloat(cs.borderTopLeftRadius),
+      rotate: parseFloat(cs.rotate) || 0, alt: el.getAttribute('alt') || '', objectFit: cs.objectFit,
     };
   }
-  function select(el) {
+  function select(el, additive=false) {
+    EDIT.keepText = false; EDIT.range = null;
     if (EDIT.textEl && EDIT.textEl !== el) commitText();
-    EDIT.sel = el || null;
+    if(additive && el) { EDIT.multi=EDIT.multi.includes(el)?EDIT.multi.filter(n=>n!==el):[...EDIT.multi,el]; } else EDIT.multi=el?[el]:[];
+    EDIT.sel = EDIT.multi[EDIT.multi.length-1] || null;
+    el=EDIT.sel;
     ensureBoxes();
     if (EDIT.hover) EDIT.hover.style.display = 'none';
-    if (!el) { if (EDIT.box) EDIT.box.style.display = 'none'; emit('edit', { type: 'select', info: null }); return; }
+    if (!el) { for(const n of document.querySelectorAll('[data-dek-selected]'))n.removeAttribute('data-dek-selected'); if (EDIT.box) EDIT.box.style.display = 'none'; emit('edit', { type: 'select', info: null }); return; }
     refreshSel();
     emit('edit', { type: 'select', info: selInfo() });
   }
@@ -884,9 +911,12 @@
     const unit = unitFor(e.target);
     if (!unit) { if (EDIT.textEl) commitText(); select(null); return; }
     e.preventDefault();
+    if(e.shiftKey || e.metaKey) { select(unit,true); return; }
+    if(!EDIT.multi.includes(unit))select(unit);
+    if(EDIT.multi.some(n=>n.hasAttribute('data-dek-locked')))return;
     const [tx, ty] = parseTranslate(unit);
-    EDIT.drag = { el: unit, x0: e.clientX, y0: e.clientY, tx, ty, moved: false };
-    if (EDIT.sel !== unit) select(unit);
+    EDIT.drag = { el: unit, x0: e.clientX, y0: e.clientY, tx, ty, moved: false, elements:EDIT.multi.map(el=>({el,xy:parseTranslate(el)})) };
+
   }
   function onEditMouseMove(e) {
     if (!EDIT.on) return;
@@ -895,7 +925,7 @@
       const dx = (e.clientX - EDIT.drag.x0) / z, dy = (e.clientY - EDIT.drag.y0) / z;
       if (!EDIT.drag.moved && Math.hypot(dx * z, dy * z) < 3) return;
       EDIT.drag.moved = true;
-      setTranslate(EDIT.drag.el, EDIT.drag.tx + dx, EDIT.drag.ty + dy);
+      for(const it of EDIT.drag.elements) { const x=it.xy[0]+dx,y=it.xy[1]+dy; setTranslate(it.el,EDIT.snap && !e.altKey?Math.round(x/8)*8:x,EDIT.snap && !e.altKey?Math.round(y/8)*8:y); }
       refreshSel();
       return;
     }
@@ -908,37 +938,39 @@
     if (!EDIT.drag) return;
     const d = EDIT.drag;
     EDIT.drag = null;
-    if (d.moved) emit('edit', { type: 'style', path: pathOf(d.el), style: { translate: d.el.style.translate || null }, info: selInfo() });
+    if (d.moved) emitStyles(d.elements.map(it=>({el:it.el,style:{translate:it.el.style.translate || null}})),'move elements');
   }
   function onEditDblClick(e) {
     if (!EDIT.on) return;
     const unit = unitFor(e.target);
     if (!unit) return;
-    if (kindOf(unit) === 'text' || TEXT_TAGS.test(unit.tagName)) { select(unit); startText(e); }
+    if (kindOf(unit) === 'text') { select(unit); startText(e); }
   }
   function onEditMouseLeave() { if (EDIT.hover) EDIT.hover.style.display = 'none'; }
 
   function startResize(e) {
     const el = EDIT.sel;
-    if (!el) return;
+    if (!el || el.hasAttribute('data-dek-locked')) return;
+    if(EDIT.textEl)commitText();
     e.preventDefault();
     e.stopPropagation();
     const r = slideRect(el);
     const both = el.matches('.dek-chart,.dek-scene,.dek-cube,div:not(.dek-text):not(.dek-instance):not([data-dek-use])');
-    EDIT.resize = { el, x0: e.clientX, y0: e.clientY, w0: r.w, h0: r.h };
+    EDIT.resize = { el, x0: e.clientX, y0: e.clientY, w0: el.offsetWidth || r.w, h0: el.offsetHeight || r.h, group:groupGeometry(el) };
     const move = (ev) => {
       const z = S.zoom || 1;
       const w = Math.max(24, EDIT.resize.w0 + (ev.clientX - EDIT.resize.x0) / z);
       el.style.width = Math.round(w) + 'px';
       if (both) el.style.height = Math.round(Math.max(24, EDIT.resize.h0 + (ev.clientY - EDIT.resize.y0) / z)) + 'px';
-      else if (el.matches('img,video,canvas,svg,iframe')) el.style.height = 'auto';
+      else if (el.matches('img,video,canvas,svg,iframe')) el.style.height = Math.round(el.dataset.dekAspect==='free' || ev.shiftKey ? Math.max(24,EDIT.resize.h0+(ev.clientY-EDIT.resize.y0)/z) : w*EDIT.resize.h0/EDIT.resize.w0)+'px';
+      EDIT.resize.updates=scaleGroup(EDIT.resize.group,parseFloat(el.style.width)/EDIT.resize.w0,parseFloat(el.style.height)/EDIT.resize.h0);
       refreshSel();
     };
     const up = () => {
       document.removeEventListener('mousemove', move, true);
       document.removeEventListener('mouseup', up, true);
-      EDIT.resize = null;
-      emit('edit', { type: 'style', path: pathOf(el), style: { width: el.style.width, height: el.style.height || null }, info: selInfo() });
+      const updates=EDIT.resize.updates || [];EDIT.resize = null;
+      emitStyles([{el,style:{width:el.style.width,height:el.style.height || null}},...updates],'resize group');
     };
     document.addEventListener('mousemove', move, true);
     document.addEventListener('mouseup', up, true);
@@ -946,10 +978,14 @@
 
   function startText(e, opts) {
     const el = EDIT.sel;
+    if(el?.hasAttribute('data-dek-locked'))return;
     if (!el || EDIT.textEl === el) return;
     if (EDIT.textEl) commitText();
     EDIT.textEl = el;
     EDIT.textBackup = el.innerHTML;
+    EDIT.textSaved = cleanHtml(el.innerHTML);
+    EDIT.textTransaction = 'typing-'+crypto.randomUUID();
+    EDIT.keepText = false; EDIT.range = null;
     el.setAttribute('contenteditable', 'true');
     el.classList.add('dek-editing-text');
     el.setAttribute('spellcheck', 'false');
@@ -963,7 +999,8 @@
     } else {
       const range = document.createRange(); range.selectNodeContents(el); range.collapse(false); sel.addRange(range);
     }
-    el.addEventListener('input', refreshSel);
+    el.addEventListener('input', onTextInput);
+    el.addEventListener('paste', onTextPaste);
     el.addEventListener('keydown', onTextKey);
     el.addEventListener('blur', onTextBlur);
     emit('edit', { type: 'select', info: selInfo() });
@@ -977,7 +1014,36 @@
     if (mod && k === 'b') { e.preventDefault(); document.execCommand('bold'); }
     if (mod && k === 'i') { e.preventDefault(); document.execCommand('italic'); }
   }
-  function onTextBlur() { if (EDIT.textEl) commitText(); }
+  function onTextBlur() { if (EDIT.textEl && !EDIT.keepText) commitText(); }
+  function onTextInput() {
+    refreshSel(); clearTimeout(EDIT.textTimer); EDIT.textTimer = setTimeout(flushText, 500);
+  }
+  function onTextPaste(e) {
+    // Text from websites should not bring invisible formatting or active markup into a slide.
+    e.preventDefault(); document.execCommand('insertText', false, e.clipboardData.getData('text/plain'));
+  }
+  function flushText() {
+    clearTimeout(EDIT.textTimer);
+    const el = EDIT.textEl; if (!el) return;
+    const html = cleanHtml(el.innerHTML);
+    if (html !== EDIT.textSaved) {
+      EDIT.textSaved = html;
+      emit('edit', { type: 'text', path: pathOf(el), html, info: selInfo(), transaction: EDIT.textTransaction });
+    }
+  }
+  function captureTextSelection() {
+    if (!EDIT.textEl) return;
+    const sel = getSelection();
+    if (sel.rangeCount && EDIT.textEl.contains(sel.anchorNode) && EDIT.textEl.contains(sel.focusNode)) EDIT.range = sel.getRangeAt(0).cloneRange();
+    EDIT.keepText = true;
+  }
+  function restoreTextSelection() {
+    if (!EDIT.textEl) return;
+    EDIT.textEl.focus();
+    if (EDIT.range && EDIT.textEl.contains(EDIT.range.commonAncestorContainer)) {
+      const sel = getSelection(); sel.removeAllRanges(); sel.addRange(EDIT.range);
+    }
+  }
   function cleanHtml(html) {
     const t = document.createElement('div');
     t.innerHTML = html;
@@ -995,17 +1061,20 @@
     el.removeAttribute('contenteditable');
     el.classList.remove('dek-editing-text');
     el.removeAttribute('spellcheck');
-    el.removeEventListener('input', refreshSel);
+    clearTimeout(EDIT.textTimer);
+    el.removeEventListener('input', onTextInput);
+    el.removeEventListener('paste', onTextPaste);
     el.removeEventListener('keydown', onTextKey);
     el.removeEventListener('blur', onTextBlur);
     EDIT.textEl = null;
     return el;
   }
   function commitText() {
+    flushText();
     const el = endTextMode();
     if (!el) return;
     const html = cleanHtml(el.innerHTML);
-    if (html !== cleanHtml(EDIT.textBackup)) emit('edit', { type: 'text', path: pathOf(el), html, info: selInfo() });
+    if (html !== EDIT.textSaved) emit('edit', { type: 'text', path: pathOf(el), html, info: selInfo() });
     else emit('edit', { type: 'select', info: selInfo() });
     refreshSel();
   }
@@ -1013,10 +1082,25 @@
     const el = endTextMode();
     if (!el) return;
     el.innerHTML = EDIT.textBackup;
+    const html = cleanHtml(el.innerHTML);
+    if (html !== EDIT.textSaved) emit('edit', { type: 'text', path: pathOf(el), html, info: selInfo() });
     refreshSel();
     emit('edit', { type: 'select', info: selInfo() });
   }
 
+  function emitStyles(updates,label) {
+    if(!updates.length)return;
+    if(updates.length===1)emit('edit',{type:'style',path:pathOf(updates[0].el),style:updates[0].style,info:selInfo()});
+    else emit('edit',{type:'batch',operations:updates.map(it=>({type:'style',target:pathOf(it.el),style:it.style})),label});
+  }
+  function groupGeometry(el) {
+    if(!el.matches('.dek-group'))return [];
+    return [...el.querySelectorAll('*')].filter(n=>!n.matches('script,style,.dek-sel,.dek-hover')).map(n=>{const cs=getComputedStyle(n),values={};for(const key of ['left','top','width','height','font-size','border-width','border-radius']){const value=cs.getPropertyValue(key);if(value.endsWith('px'))values[key]=parseFloat(value);}return{el:n,values};});
+  }
+  function scaleGroup(items,sx,sy) {
+    if(!Number.isFinite(sx)||!Number.isFinite(sy))return [];
+    return items.map(item=>{const style={};for(const [key,value] of Object.entries(item.values)){style[key]=(value*(['left','width'].includes(key)?sx:['top','height'].includes(key)?sy:Math.min(sx,sy)))+'px';item.el.style.setProperty(key,style[key]);}return{el:item.el,style};});
+  }
   const editApi = {
     enable(on) {
       on = !!on;
@@ -1046,45 +1130,38 @@
       }
     },
     enabled() { return EDIT.on; },
-    select(path) { select(path ? elAt(path) : null); return selInfo(); },
+    select(path, additive=false) { select(path ? unitFor(elAt(path)) : null,additive); return selInfo(); },
+    selectMany(paths) { select(null); const units=[...new Set(paths.map(p=>unitFor(elAt(p))).filter(Boolean))];units.forEach(el=>select(el,true)); return selInfo(); },
+    snapping() { return EDIT.snap; }, snap(on) { EDIT.snap=!!on; },
     selected: selInfo,
     clear() { select(null); },
     refresh: refreshSel,
     nudge(dx, dy) {
-      const el = EDIT.sel;
-      if (!el) return;
-      const [tx, ty] = parseTranslate(el);
-      setTranslate(el, tx + dx, ty + dy);
-      refreshSel();
-      emit('edit', { type: 'style', path: pathOf(el), style: { translate: el.style.translate || null }, info: selInfo() });
+      const updates=EDIT.multi.filter(el=>!el.hasAttribute('data-dek-locked')).map(el=>{const [x,y]=parseTranslate(el);setTranslate(el,x+dx,y+dy);return{el,style:{translate:el.style.translate || null}};});
+      refreshSel(); emitStyles(updates,'move elements');
     },
     setStyle(style) {
-      const el = EDIT.sel;
-      if (!el) return;
-      for (const k in style) { if (style[k] === null || style[k] === '') el.style.removeProperty(k); else el.style.setProperty(k, style[k]); }
-      refreshSel();
-      emit('edit', { type: 'style', path: pathOf(el), style, info: selInfo() });
+      const children=[];
+      const updates=EDIT.multi.filter(el=>!el.hasAttribute('data-dek-locked')).map(el=>{if(el.matches('.dek-group')&&(style.width || style.height))children.push(...scaleGroup(groupGeometry(el),style.width?parseFloat(style.width)/el.offsetWidth:1,style.height?parseFloat(style.height)/el.offsetHeight:1));for(const[k,v]of Object.entries(style)) {if(v===null || v==='')el.style.removeProperty(k);else el.style.setProperty(k,v);}return{el,style};});
+      updates.push(...children);
+      refreshSel();emitStyles(updates,'style elements');
     },
     setAttrs(attrs) {
       const el = EDIT.sel;
-      if (!el) return;
+      if (!el || el.hasAttribute('data-dek-locked')) return;
       for (const k in attrs) { if (attrs[k] === null) el.removeAttribute(k); else el.setAttribute(k, attrs[k]); }
       refreshSel();
       emit('edit', { type: 'attrs', path: pathOf(el), attrs, info: selInfo() });
     },
     deleteSelected() {
-      const el = EDIT.sel;
-      if (!el) return;
-      if (EDIT.textEl === el) endTextMode();
-      const path = pathOf(el);
-      el.remove();
-      EDIT.sel = null;
-      if (EDIT.box) EDIT.box.style.display = 'none';
-      emit('edit', { type: 'delete', path });
-      emit('edit', { type: 'select', info: null });
+      if(EDIT.textEl)commitText();
+      const paths=EDIT.multi.filter(el=>!el.hasAttribute('data-dek-locked')).map(pathOf);
+      if(paths.length)emit('edit',{type:'batch',operations:[{type:'delete',targets:paths}],label:'delete elements'});
+      select(null);
     },
     retag(tag) {
       const el = EDIT.sel;
+      if(el?.hasAttribute('data-dek-locked'))return;
       if (!el || el.tagName.toLowerCase() === tag) return;
       if (EDIT.textEl === el) commitText();
       const path = pathOf(el);
@@ -1096,10 +1173,89 @@
       refreshSel();
       emit('edit', { type: 'retag', path, tag, info: selInfo() });
     },
-    startText(opts) { if (EDIT.sel && (kindOf(EDIT.sel) === 'text' || TEXT_TAGS.test(EDIT.sel.tagName))) startText(null, opts); },
+    startText(opts) { if (EDIT.sel && kindOf(EDIT.sel) === 'text') startText(null, opts); },
     commitText,
     cancelText,
-    format(cmd) { if (EDIT.textEl) { document.execCommand(cmd); refreshSel(); } },
+    captureTextSelection,
+    textStyle(style) {
+      restoreTextSelection();
+      const sel = getSelection();
+      if (EDIT.textEl && sel.rangeCount && !sel.isCollapsed && EDIT.textEl.contains(sel.anchorNode) && EDIT.textEl.contains(sel.focusNode)) {
+        const range = sel.getRangeAt(0), span = document.createElement('span');
+        for (const [k,v] of Object.entries(style)) span.style.setProperty(k, v);
+        span.appendChild(range.extractContents()); range.insertNode(span);
+        range.selectNodeContents(span); sel.removeAllRanges(); sel.addRange(range); EDIT.range = range.cloneRange();
+        flushText(); refreshSel();
+      } else editApi.setStyle(style);
+    },
+    format(cmd) {
+      if (!EDIT.sel || kindOf(EDIT.sel) !== 'text') return;
+      if (!EDIT.textEl) startText(null, { selectAll: true });
+      restoreTextSelection();
+      document.execCommand(cmd); captureTextSelection(); flushText(); refreshSel();
+      emit('edit', { type: 'select', info: selInfo() });
+    },
+    duplicate() {
+      commitText();
+      return EDIT.multi.map(el=>{
+        const clone=el.cloneNode(true);
+        for(const n of [clone,...clone.querySelectorAll('[id],[data-id],[data-dek-id]')]) { n.removeAttribute('data-dek-id');n.removeAttribute('data-dek-selected'); }
+        clone.classList.remove('visible','current-fragment','dek-editing-text');
+        const[x,y]=parseTranslate(el);setTranslate(clone,x+32,y+32);return clone.outerHTML;
+      }).join('');
+    },
+    lock(locked) { emit('edit',{type:'batch',operations:[{type:'lock',targets:EDIT.multi.map(pathOf),locked}],label:locked?'lock elements':'unlock elements'}); },
+    group() {
+      commitText(); const list=EDIT.multi;
+      if(list.length<2)return;
+      if(list.some(n=>n.parentElement!==list[0].parentElement)) { emit('edit',{type:'notice',message:'Choose objects in the same container to group them.'});return; }
+      const positions=list.map(n=>layoutRect(n,n.parentElement)), box={x:Math.min(...positions.map(r=>r.x)),y:Math.min(...positions.map(r=>r.y))};
+      box.w=Math.max(...positions.map(r=>r.x+r.w))-box.x;box.h=Math.max(...positions.map(r=>r.y+r.h))-box.y;
+      emit('edit',{type:'batch',operations:[{type:'group',targets:list.map(pathOf),box,positions}],label:'group elements'});
+    },
+    ungroup() {
+      const el=EDIT.sel;if(!el?.matches('.dek-group'))return;
+      const rotation=parseFloat(getComputedStyle(el).rotate)||0;
+      emit('edit',{type:'batch',operations:[{type:'ungroup',target:pathOf(el),positions:Array.from(el.children).map(n=>({...layoutRect(n,el.parentElement),rotate:(parseFloat(getComputedStyle(n).rotate)||0)+rotation}))}],label:'ungroup elements'});
+    },
+    align(edge) {
+      const list=EDIT.multi.filter(n=>!n.hasAttribute('data-dek-locked'));if(!list.length)return;
+      const rs=list.map(slideRect), ref=list.length===1?{x:0,y:0,w:S.w,h:S.h}:{x:Math.min(...rs.map(r=>r.x)),y:Math.min(...rs.map(r=>r.y))};
+      if(list.length>1){ref.w=Math.max(...rs.map(r=>r.x+r.w))-ref.x;ref.h=Math.max(...rs.map(r=>r.y+r.h))-ref.y;}
+      const updates=list.map((el,i)=>{const r=rs[i],[x,y]=parseTranslate(el);const dx=edge==='left'?ref.x-r.x:edge==='right'?ref.x+ref.w-r.x-r.w:edge==='center'?ref.x+(ref.w-r.w)/2-r.x:0;const dy=edge==='top'?ref.y-r.y:edge==='bottom'?ref.y+ref.h-r.y-r.h:edge==='middle'?ref.y+(ref.h-r.h)/2-r.y:0;setTranslate(el,x+dx,y+dy);return{el,style:{translate:el.style.translate || null}};});
+      emitStyles(updates,'align elements');refreshSel();
+    },
+    distribute(axis) {
+      const list=EDIT.multi.filter(n=>!n.hasAttribute('data-dek-locked')).map(el=>({el,r:slideRect(el)})).sort((a,b)=>a.r[axis]-b.r[axis]);if(list.length<3)return;
+      const size=axis==='x'?'w':'h',first=list[0].r,last=list[list.length-1].r;
+      const gap=(last[axis]+last[size]-first[axis]-list.reduce((n,it)=>n+it.r[size],0))/(list.length-1);
+      let cursor=first[axis];const updates=list.map(it=>{const[x,y]=parseTranslate(it.el),delta=cursor-it.r[axis];setTranslate(it.el,x+(axis==='x'?delta:0),y+(axis==='y'?delta:0));cursor+=it.r[size]+gap;return{el:it.el,style:{translate:it.el.style.translate || null}};});emitStyles(updates,'distribute elements');refreshSel();
+    },
+    link(url) {
+      if(!EDIT.textEl)startText(null,{selectAll:true});restoreTextSelection();
+      document.execCommand(url?'createLink':'unlink',false,url);captureTextSelection();flushText();
+    },
+    arrange(direction) {
+      const el = EDIT.sel; if (!el) return;
+      const values = Array.from(currentSection().children).filter(n=>!n.matches('.dek-sel,.dek-hover')).map(n=>parseInt(getComputedStyle(n).zIndex)||0);
+      const z = direction === 'front' ? Math.max(...values,0)+1 : Math.min(...values,0)-1;
+      editApi.setStyle({ position: getComputedStyle(el).position === 'static' ? 'relative' : el.style.position || null, 'z-index': String(z) });
+    },
+    geometry(key, value) {
+      const el = EDIT.sel; if (!el || !Number.isFinite(value)) return;
+      const r = slideRect(el), [x,y] = parseTranslate(el);
+      if (key === 'x' || key === 'y') editApi.nudge(key==='x' ? value-r.x : 0,key==='y' ? value-r.y : 0);
+    },
+    center(axis) {
+      const el = EDIT.sel; if (!el) return;
+      const r = slideRect(el);
+      editApi.nudge(axis==='x' ? (S.w-r.w)/2-r.x : 0,axis==='y' ? (S.h-r.h)/2-r.y : 0);
+    },
+    layers() {
+      const sec=currentSection(); if (!sec) return [];
+      const nodes=Array.from(sec.querySelectorAll('*')).map(unitFor).filter(Boolean);
+      return Array.from(new Set(nodes)).filter(el=>!el.closest('.notes,.dek-sel,.dek-hover,script,style')).map(el=>({path:pathOf(el),kind:kindOf(el),locked:el.hasAttribute('data-dek-locked'),id:el.dataset.dekId || null,label:(el.getAttribute('alt') || el.textContent?.trim() || labelFor(el)).slice(0,60)})).reverse();
+    },
     insert(html) {
       const sec = currentSection();
       if (!sec) return null;
@@ -1107,7 +1263,7 @@
       t.innerHTML = html.trim();
       const el = t.content.firstElementChild;
       if (!el) return null;
-      sec.appendChild(el);
+      sec.appendChild(t.content);
       if (EDIT.box && EDIT.box.parentElement === sec) { sec.appendChild(EDIT.hover); sec.appendChild(EDIT.box); }
       select(el);
       return pathOf(el);
@@ -1184,6 +1340,11 @@
       requestAnimationFrame(fit);
       setTimeout(fit, 60);
       document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('load', e=>{
+        if(EDIT.on && EDIT.sel && (EDIT.sel===e.target || EDIT.sel.contains(e.target))) {
+          refreshSel();emit('edit',{type:'select',info:selInfo()});
+        }
+      },true);
       // initial slide, no transition
       const start = clamp(S.opts.index | 0, 0, Math.max(0, S.sections.length - 1));
       S.index = start;
@@ -1193,6 +1354,7 @@
         S.step = s;
         applyStep(first, s, true);
         first.classList.add('present');
+        first.removeAttribute('aria-hidden');first.inert=false;
         if (!isStatic()) markActive(first, true);
         afterEnter(first, true);
       }
@@ -1213,8 +1375,8 @@
       const p = neighbor(S.index, -1);
       return p >= 0 ? go(p, 'last') : false;
     },
-    first() { const i = isSkipped(0) ? neighbor(0, 1) : 0; return go(i < 0 ? 0 : i, 0); },
-    last() { const l = S.sections.length - 1; const i = isSkipped(l) ? neighbor(l, -1) : l; return go(i < 0 ? l : i, 'last'); },
+    first() { const i = S.opts.skipHidden!==false && isSkipped(0) ? neighbor(0, 1) : 0; return go(i < 0 ? 0 : i, 0); },
+    last() { const l = S.sections.length - 1; const i = S.opts.skipHidden!==false && isSkipped(l) ? neighbor(l, -1) : l; return go(i < 0 ? l : i, 'last'); },
     isSkipped,
     state: stateOf,
     count() { return S.sections.length; },
