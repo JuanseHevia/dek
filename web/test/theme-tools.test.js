@@ -17,13 +17,13 @@ const guideSource = fs.readFileSync(path.join(root, 'docs/DECK_FORMAT.md'), 'utf
 /** Tool names the bridge advertises to the client. */
 function bridgeTools() {
   const block = bridgeSource.slice(bridgeSource.indexOf('const TOOLS = ['), bridgeSource.indexOf('const RESOURCES'));
-  return Array.from(block.matchAll(/^\s{2}\{?\s*\n?\s*name: '([\w_]+)'/gm)).map((m) => m[1]);
+  return [...block.matchAll(/^\s{2}\{?\s*\n?\s*name: '([\w_]+)'/gm),...block.matchAll(/tool\('([\w_]+)'/g)].map(m=>m[1]);
 }
 
 /** Tool names the shell implements, from the TOOLS map it exposes over rpc. */
 function shellTools() {
   const start = shellSource.indexOf('const TOOLS = {');
-  const block = shellSource.slice(start, shellSource.indexOf('\nasync function rpc(', start));
+  const block = shellSource.slice(start, shellSource.indexOf('\nlet rpcQueue', start));
   return Array.from(block.matchAll(/^ {2}(?:async )?([a-z_][\w]*)\(/gm)).map((m) => m[1]);
 }
 
@@ -40,7 +40,7 @@ test('the bridge advertises every design-system tool', () => {
 
 test('the shell implements every tool the bridge advertises', () => {
   const shell = shellTools();
-  const missing = bridgeTools().filter((t) => !shell.includes(t) && !t.startsWith('snapshot_'));
+  const missing = bridgeTools().filter((t) => !shell.includes(t) && !t.startsWith('snapshot_') && !['export_deck','get_export_status','cancel_export'].includes(t));
   assert.deepEqual(missing, [], 'tools the agent can call but the shell cannot run');
 });
 

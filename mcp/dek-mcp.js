@@ -11,7 +11,7 @@ const os = require('os');
 const path = require('path');
 const readline = require('readline');
 
-const STATE = path.join(os.homedir(), 'Library', 'Application Support', 'Dek', 'agent.json');
+const STATE = path.join(process.env.DEK_SUPPORT_DIR || path.join(os.homedir(), 'Library', 'Application Support', 'Dek'), 'agent.json');
 
 let clientName = 'Agent';
 
@@ -30,7 +30,7 @@ async function app(method, endpoint, body) {
   let res;
   try {
     res = await fetch(`http://127.0.0.1:${state.port}${endpoint}`, {
-      method,
+      method, signal:AbortSignal.timeout(330000),
       headers: { Authorization: `Bearer ${state.token}`, 'Content-Type': 'application/json' },
       body: body ? JSON.stringify(body) : undefined,
     });
@@ -281,9 +281,35 @@ const TOOLS = [
   // drive
   { name: 'goto', description: 'Show a slide (and optionally a fragment step) on the stage.', inputSchema: { type: 'object', properties: { slide: SLIDE, step: { type: ['integer', 'string'] } }, additionalProperties: false } },
   { name: 'navigate', description: 'Step the presentation: next | prev | first | last.', inputSchema: { type: 'object', properties: { action: { type: 'string', enum: ['next', 'prev', 'first', 'last'] } }, required: ['action'], additionalProperties: false } },
-  { name: 'present', description: 'Control presenting: start (fullscreen from the current slide), from_start, stop, or presenter (open the presenter view).', inputSchema: { type: 'object', properties: { action: { type: 'string', enum: ['start', 'from_start', 'stop', 'presenter'] } }, additionalProperties: false } },
+  { name: 'present', description: 'Control presenting: start (fullscreen from the current slide), from_start, stop, or presenter (open the presenter view).', inputSchema: { type: 'object', properties: { action: { type: 'string', enum: ['start', 'from_start', 'stop', 'presenter', 'black', 'white', 'clear', 'reset_timer'] } }, additionalProperties: false } },
   { name: 'overview', description: 'Open or close the light table in the app.', inputSchema: { type: 'object', properties: { open: { type: 'boolean' } }, additionalProperties: false } },
 ];
+
+// Additive authoring tools. Existing tool names and arguments remain supported.
+const OBJECT = { type:'object', additionalProperties:true };
+const REF_LIST = { type:'array', items:SLIDE };
+const tool = (name,description,properties,required=[]) => ({name,description,inputSchema:{type:'object',properties,required,additionalProperties:false}});
+TOOLS.push(
+  tool('copy_slides','Copy slides from a local HTML source into the open destination deck. Copy local assets and components, use destination design, leave source unchanged. at is a 1-based insertion position.',{source:{type:'string'},slides:REF_LIST,at:{type:'integer'}},['source']),
+  tool('select_elements','Select objects on a slide by stable data-dek-id selectors or other CSS selectors. Opens Edit mode and returns the selection.',{slide:SLIDE,selectors:{type:'array',items:{type:'string'}}},['selectors']),
+  tool('arrange_elements','Use the same arrangement operations as the inspector. Selectors identify source objects. Group, ungroup, lock, unlock, front, back, nudge, align edges/center/middle, or distribute.',{slide:SLIDE,selectors:{type:'array',items:{type:'string'}},action:{type:'string',enum:['group','ungroup','lock','unlock','front','back','resize','nudge','left','right','top','bottom','center','middle','distribute']},axis:{type:'string',enum:['x','y']},x:{type:'number'},y:{type:'number'},width:{type:'number'},height:{type:'number'}},['selectors','action']),
+  tool('get_selection','The selected slide numbers and element targets, styles and geometry in Dek. Use these targets when the user refers to selected content.',{}),
+  tool('edit_elements','Apply one undoable batch to a slide. Operations use type style/attrs/text/delete/lock/insert/group/ungroup/retag; target is a CSS selector or a zero-based child-index path. style and attrs are objects. Group operations require targets, box and positions; ungroup requires child positions. HTML remains the editable source.',{slide:SLIDE,operations:{type:'array',items:OBJECT},label:{type:'string'}},['operations']),
+  tool('set_slide_visibility','Hide or show slides. Hidden slides remain editable, are skipped in presentation, and excluded from export unless explicitly included.',{slides:REF_LIST,slide:SLIDE,hidden:{type:'boolean'}},['hidden']),
+  tool('batch_slides','One undoable action across slides. move uses to as the 1-based insertion position among remaining slides; section assigns section_id or clears it when null.',{slides:REF_LIST,action:{type:'string',enum:['hide','show','duplicate','delete','move','section']},to:{type:'integer'},section_id:{type:['string','null']}},['slides','action']),
+  tool('manage_section','Create, rename, reorder, or remove an organizational section without deleting its slides. Sections are metadata, never HTML wrappers.',{action:{type:'string',enum:['create','rename','reorder','remove']},id:{type:'string'},name:{type:'string'},to:{type:'integer'}},['action']),
+  tool('add_shape','Insert an editable HTML shape on a slide, using the same primitive as the manual editor. Coordinates and sizes use deck pixels.',{slide:SLIDE,shape:{type:'string',enum:['rectangle','rounded','ellipse','line','arrow','triangle']},x:{type:'number'},y:{type:'number'},width:{type:'number'},height:{type:'number'},fill:{type:'string'},stroke:{type:'string'},strokeWidth:{type:'number'}},['shape']),
+  tool('import_image','Copy a local image into the deck assets folder and insert it as an editable image. Returns its relative URL after the slide is saved.',{slide:SLIDE,path:{type:'string'},alt:{type:'string'},x:{type:'number'},y:{type:'number'},width:{type:'number'}},['path']),
+  tool('undo','Undo the last manual or agent edit to the open deck.',{}),
+  tool('redo','Redo the most recently undone edit to the open deck.',{}),
+  tool('export_deck','Start an isolated local export job. format is pdf or pptx; pptx mode is editable (default) or image. Hidden slides are excluded by default. Poll get_export_status for the completed path and fallback warnings.',{path:{type:'string'},format:{type:'string',enum:['pdf','pptx']},mode:{type:'string',enum:['editable','image']},includeHidden:{type:'boolean'},overwrite:{type:'boolean'}},['path','format']),
+  tool('get_export_status','Read export progress, terminal status, warnings and saved path. A path is returned only after a successful write.',{job_id:{type:'string'}},['job_id']),
+  tool('cancel_export','Cancel an export job. The destination file is not replaced by incomplete output.',{job_id:{type:'string'}},['job_id'])
+);
+for(const t of TOOLS) {
+  if(t.name==='goto')t.inputSchema.properties.show_hidden={type:'boolean',description:'Explicitly show a hidden slide during presentation.'};
+  if(!/^(get_|list_|snapshot_|preview_|export_|cancel_export)/.test(t.name)) t.inputSchema.properties.revision={type:'string',description:'Optional revision from get_deck. Stale revisions fail without changing the deck.'};
+}
 
 const RESOURCES = [
   { uri: 'dek://format-guide', name: 'Dek deck format guide', description: 'How to write a Dek deck (HTML sections, fragments, auto-animate, charts, 3D, components).', mimeType: 'text/markdown' },
@@ -341,7 +367,7 @@ async function callTool(name, args) {
   }
   const result = await rpc(name, args);
   if (name === 'get_slide' && result && result.html) {
-    return { content: [{ type: 'text', text: `slide ${result.n} · id ${result.id || '(none)'} · ${result.fragments} fragment step(s)${result.transition ? ` · transition ${result.transition}` : ''}\n\n${result.html}\n\nnotes: ${result.notes || '(none)'}` }] };
+    return { content: [{ type: 'text', text: `revision ${result.revision}\nslide ${result.n} · id ${result.id || '(none)'} · ${result.fragments} fragment step(s)${result.transition ? ` · transition ${result.transition}` : ''}\n\n${result.html}\n\nnotes: ${result.notes || '(none)'}` }] };
   }
   return { content: [{ type: 'text', text: pretty(result) }] };
 }
