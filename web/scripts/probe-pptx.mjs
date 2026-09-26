@@ -20,7 +20,7 @@ function photo(w, h) {
   const chunk = (type, data) => { const l = Buffer.alloc(4); l.writeUInt32BE(data.length); const body = Buffer.concat([Buffer.from(type), data]); const s = Buffer.alloc(4); s.writeUInt32BE(crc(body)); return Buffer.concat([l, body, s]); };
   const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 2;
   const raw = Buffer.alloc((w * 3 + 1) * h);
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = y * (w * 3 + 1) + 1 + x * 3; const q = (x < w / 2) === (y < h / 2); raw[i] = q ? 224 : 58; raw[i + 1] = q ? 179 : 79; raw[i + 2] = q ? 86 : 122; }
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = y * (w * 3 + 1) + 1 + x * 3; const band = Math.floor(x / (w / 4)); raw[i] = [192, 224, 58, 20][band]; raw[i + 1] = [57, 179, 79, 140][band]; raw[i + 2] = [43, 86, 122, 90][band]; }
   return 'data:image/png;base64,' + Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]).toString('base64');
 }
 
@@ -41,7 +41,7 @@ s = pptx.addSlide(); label(s, 4, 'Shape shadow and rounded corners', 'white card
 [[.1, .5], [.3, 3.5], [.6, 6.5], [1.2, 9.5]].forEach(([r, x]) => s.addShape('roundRect', { x, y: 2, w: 2.6, h: 2.4, rectRadius: r, fill: { color: 'FFFFFF' }, line: { type: 'none' }, shadow: { type: 'outer', blur: 18, offset: 6, angle: 90, color: '141828', opacity: .18 } }));
 s.background = { color: 'F4F2EE' };
 
-s = pptx.addSlide(); label(s, 5, 'Image crop (object-fit: cover)', 'left: whole 4-square image stretched; right: cropped to the centered square, no distortion');
+s = pptx.addSlide(); label(s, 5, 'Image crop (object-fit: cover)', 'left: all four color bands (red, gold, blue, green), squeezed; right: only the gold and blue middle bands');
 const img = photo(800, 400);
 s.addImage({ data: img, x: .5, y: 1.6, w: 5.6, h: 5.6 });
 s.addImage({ data: img, x: 7, y: 1.6, w: 11.2, h: 5.6, sizing: { type: 'crop', x: 2.8, y: 0, w: 5.6, h: 5.6 } });

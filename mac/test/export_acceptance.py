@@ -80,7 +80,9 @@ for s in report:
     print(f"{s['name'].split('/')[-1]}: pictures={len(s['pics'])} full-slide={sum(p['full'] for p in s['pics'])} texts={len(s['texts'])} faces={sorted(s['faces'])} below-2x={len(lows)}")
 check('no autofit anywhere', not any('normAutofit' in s['xml'] for s in report))
 check('no full-slide pictures', not any(p['full'] for s in report for p in s['pics']))
-check('Slides-safe faces only', all(f in json.load(open(Path(__file__).resolve().parents[2] / 'web/src/google-fonts.json'))  or f in ('Arial', 'Georgia', 'Courier New', 'Times New Roman', 'Verdana', 'Trebuchet MS', 'Impact') for s in report for f in s['faces']))
+GOOGLE = json.load(open(Path(__file__).resolve().parents[2] / 'web/src/google-fonts.json'))
+base = lambda f: re.sub(r' (Thin|ExtraLight|Light|Medium|SemiBold|Bold|ExtraBold|Black)$', '', f)
+check('Slides-safe faces only', all(base(f) in GOOGLE or f in ('Arial', 'Georgia', 'Courier New', 'Times New Roman', 'Verdana', 'Trebuchet MS', 'Impact') for s in report for f in s['faces']))
 
 if deck.name == 'export-kitchen-sink.html':
     photo = (deck.parent / 'export-photo.png').read_bytes()
@@ -93,6 +95,7 @@ if deck.name == 'export-kitchen-sink.html':
     for phrase in ['Native slides that survive Google Slides', 'Medium 500', 'Heavy 800', 'Shadowed card', 'decorative dot', 'On track', 'for the quarter', 'Half-transparent container text', 'Gradient headline', 'Second point']:
         check(f'text editable: {phrase}', phrase in text)
     check('system-ui mapped to Inter', 'Inter' in report[0]['faces'] and 'Inter' in ' '.join(status['summary']['lines']))
+    check('weights become named faces', {'Inter Medium', 'Inter SemiBold', 'Inter Bold', 'Inter ExtraBold'} <= report[0]['faces'])
     check('card shadow is native', '<a:outerShdw' in report[1]['xml'])
     check('gradient flattened is reported', any(w['kind'] == 'gradient-flattened' for w in status['warnings']))
 print('DONE', out)

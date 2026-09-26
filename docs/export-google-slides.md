@@ -4,14 +4,14 @@ Dek's PowerPoint export targets Google Slides' Drive import (upload the `.pptx`,
 
 | # | Feature (probe slide) | Export default | Slides result | Follow-up if it fails |
 |---|---|---|---|---|
-| 1 | Weights by typeface name (`Plus Jakarta Sans Medium`) | not used; bold from weight ≥ 600 | _pending_ | if suffixed names render, map weights to them |
-| 2 | Line spacing in points vs multiple | points (`spcPts`) | _pending_ | switch to multiples |
-| 3 | Letter spacing | points | _pending_ | — |
-| 4 | Shape shadow, rounded corners | native shadow and radius | _pending_ | drop the shadow silently |
-| 5 | Image crop (`srcRect`) for `object-fit: cover` | crop | _pending_ | pre-crop in the renderer |
-| 6 | Width slack on wrapped text | +4% | _pending_ | pick the smallest slack with no extra wraps |
-| 7 | Shape and text transparency | native | _pending_ | — |
-| 8 | No autofit | never shrink | _pending_ | — |
-| 9 | Highlight, soft breaks, bullets | native | _pending_ | draw highlights as shapes behind the text |
+| 1 | Weights by typeface name (`Plus Jakarta Sans Medium`) | nearest shipped weight, named | ✅ each weight renders distinctly → the export names weights in the typeface | — |
+| 2 | Line spacing in points vs multiple | points (`spcPts`) | ✅ identical; points kept | switch to multiples |
+| 3 | Letter spacing | points | ❌ ignored: all three lines render the same → boxes widen by the lost negative tracking | — |
+| 4 | Shape shadow, rounded corners | native shadow and radius | ✅ shadows and radii render; large radii clamp to a pill | drop the shadow silently |
+| 5 | Image crop (`srcRect`) for `object-fit: cover` | crop | ⚠️ inconclusive (symmetric probe image); probe fixed to four color bands, re-check | pre-crop in the renderer |
+| 6 | Width slack on wrapped text | +4% (+12% single line) | ✅ same break in all three; ❌ `wrap:false` ignored (the line wrapped) → single-line boxes get +12% | pick the smallest slack with no extra wraps |
+| 7 | Shape and text transparency | native | ✅ shape transparency; ❌ text transparency renders opaque | — |
+| 8 | No autofit | never shrink | ✅ both keep 32pt and overflow | — |
+| 9 | Highlight, soft breaks, bullets | native | ✅ highlight, soft break and bullets all render | draw highlights as shapes behind the text |
 
-Checked by: _name, date_
+Checked 2026-09-26 in Google Slides, with the `.pptx` opened from Drive in Office-compatibility mode (not yet converted with File → Save as Google Slides).

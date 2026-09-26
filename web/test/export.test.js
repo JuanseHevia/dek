@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import zlib from 'node:zlib';
 import JSZip from 'jszip';
 import { writePowerPoint, exportSummary } from '../src/pptx.js';
-import { resolveFont, fontFamilies } from '../src/fonts.js';
+import { resolveFont, fontFamilies, weightedFace } from '../src/fonts.js';
 
 const SIZE = { w: 1920, h: 1080 };
 
@@ -43,10 +43,19 @@ test('font stacks resolve to faces Google Slides can render, reporting replaceme
   assert.deepEqual(fontFamilies('"A, B", C'), ['A, B', 'C']);
 });
 
+test('Google Fonts weights become weighted typeface names Slides renders; other fonts use bold', () => {
+  assert.deepEqual(weightedFace('Plus Jakarta Sans', 500), { face: 'Plus Jakarta Sans Medium', bold: false });
+  assert.deepEqual(weightedFace('Plus Jakarta Sans', 650), { face: 'Plus Jakarta Sans Bold', bold: false });
+  assert.deepEqual(weightedFace('Plus Jakarta Sans', 750), { face: 'Plus Jakarta Sans ExtraBold', bold: false });
+  assert.deepEqual(weightedFace('Plus Jakarta Sans', 900), { face: 'Plus Jakarta Sans ExtraBold', bold: false }, 'nearest shipped weight');
+  assert.deepEqual(weightedFace('Plus Jakarta Sans', 400), { face: 'Plus Jakarta Sans', bold: false });
+  assert.deepEqual(weightedFace('Georgia', 700), { face: 'Georgia', bold: true });
+});
+
 test('text boxes carry no autofit, real line spacing, Slides faces and CSS padding in the right sides', async () => {
   const { xml } = await slideXml([text()]);
   assert.ok(!xml.includes('normAutofit'), 'no shrink-on-overflow');
-  assert.match(xml, /typeface="Inter"/);
+  assert.match(xml, /typeface="Inter Medium"/);
   assert.ok(!/ b="1"/.test(xml), 'weight 500 is not bold');
   assert.match(xml, /wrap="none"/, 'single-line boxes do not wrap');
   const pt = 13.333333 / 1920 * 72;
@@ -64,8 +73,8 @@ test('runs carry the deck language so Slides spell-checks in it', async () => {
   assert.match(xml, /<a:rPr lang="es"/);
 });
 
-test('bold only from weight 600 and wrapped boxes get width slack within the slide', async () => {
-  const bold = text({ singleLine: false, runs: [{ text: 'Heavy', options: { fontStack: 'Inter', weight: 700, fontSize: 40, color: '000000' } }] });
+test('wrapped boxes get width slack within the slide, more for tight tracking and single lines', async () => {
+  const bold = text({ singleLine: false, runs: [{ text: 'Heavy', options: { fontStack: 'Georgia', weight: 700, fontSize: 40, color: '000000' } }] });
   const { xml } = await slideXml([bold]);
   assert.match(xml, / b="1"/);
   assert.match(xml, /wrap="square"/);
@@ -76,6 +85,11 @@ test('bold only from weight 600 and wrapped boxes get width slack within the sli
   const r = await slideXml([edge]);
   const [, x, , w] = r.xml.match(/<p:sp>.*?<a:off x="(\d+)" y="(\d+)"\/>\s*<a:ext cx="(\d+)"/s).map(Number);
   assert.ok((x + w) / emuPerPx <= 1920.5, 'slack never pushes past the right edge');
+  const tight = await slideXml([text({ singleLine: false, runs: [{ text: 'Tight', options: { fontStack: 'Inter', weight: 700, fontSize: 40, charSpacing: -2, color: '000000' } }] })]);
+  const tcx = +tight.xml.match(/<p:sp>.*?<a:ext cx="(\d+)"/s)[1];
+  assert.equal(Math.round(tcx / emuPerPx), Math.round(800 * (1 + .04 + 2 / 40)), 'negative tracking widens the box');
+  const single = await slideXml([text()]);
+  assert.equal(Math.round(+single.xml.match(/<p:sp>.*?<a:ext cx="(\d+)"/s)[1] / emuPerPx), Math.round(800 * 1.12), 'single lines get room since Slides wraps anyway');
 });
 
 test('rounded shapes get a radius in range, shadows stay native, missing borders mean no line', async () => {

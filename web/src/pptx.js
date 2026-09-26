@@ -1,12 +1,13 @@
 // Writes the native nodes the export inspector extracted into a .pptx. Pure (no DOM) so it
 // runs in the editor shell and in node tests alike.
 import pptxgen from 'pptxgenjs';
-import { resolveFont } from './fonts.js';
+import { resolveFont, weightedFace } from './fonts.js';
 
 const SHAPES={rectangle:'rect',rounded:'roundRect',ellipse:'ellipse',line:'line',arrow:'rightArrow',triangle:'triangle'};
-// Google Slides re-measures text with its own font metrics; a little extra width keeps
-// wrapped lines from breaking one word earlier than in the browser.
-const WIDTH_SLACK=0.04;
+// Google Slides re-measures text with its own font metrics and ignores both letter spacing and
+// "do not wrap", so boxes get extra width: a little for wrapped text, more for single lines, plus
+// whatever negative tracking the browser applied (Slides sets that text wider).
+const WIDTH_SLACK=0.04,SINGLE_LINE_SLACK=0.12;
 
 // Everything a person should know before sharing the file, from the extractor's warnings
 // and the fonts the writer will substitute.
@@ -43,7 +44,9 @@ export async function writePowerPoint({title,size,slides,lang='en-US'}) {
       }
       if(node.type==='text'){
         let {x,w}=pos;
-        if(!node.singleLine){const extra=Math.min(w*WIDTH_SLACK,Math.max(0,width-(x+w))+(node.align==='left'?0:x));if(node.align==='center')x-=extra/2;else if(node.align==='right')x-=extra;w+=extra;}
+        const tracking=Math.max(0,...node.runs.map(r=>-(r.options?.charSpacing || 0)/(r.options?.fontSize || node.fontSize)));
+        const extra=Math.min(w*((node.singleLine?SINGLE_LINE_SLACK:WIDTH_SLACK)+tracking),Math.max(0,width-(x+w))+(node.align==='left'?0:x));
+        if(node.align==='center')x-=extra/2;else if(node.align==='right')x-=extra;w+=extra;
         // List items are separate paragraphs (each keeps its bullet); other breaks are soft line breaks.
         // Paragraph properties ride on every run: pptxgenjs starts each paragraph from its first run.
         const para={align:['left','center','right','justify'].includes(node.align)?node.align:'left',lineSpacing:node.lineHeight*pt,bullet:node.bullet?{...node.bullet,indent:Math.max(1,node.margin[3]*pt)}:undefined,paraSpaceAfter:0,paraSpaceBefore:0};
@@ -61,8 +64,8 @@ export async function writePowerPoint({title,size,slides,lang='en-US'}) {
 }
 
 function runOptions(o,node,pt) {
-  const face=resolveFont(o.fontStack || '').face;
-  return {fontFace:face,fontSize:(o.fontSize || node.fontSize)*pt,bold:(o.weight || 400)>=600,italic:!!o.italic,underline:o.underline?{style:'sng'}:undefined,strike:o.strike?'sngStrike':undefined,color:o.color,highlight:o.highlight,charSpacing:(o.charSpacing || 0)*pt || undefined,...(o.hyperlink?{hyperlink:o.hyperlink}:{})};
+  const {face,bold}=weightedFace(resolveFont(o.fontStack || '').face,o.weight || 400);
+  return {fontFace:face,fontSize:(o.fontSize || node.fontSize)*pt,bold,italic:!!o.italic,underline:o.underline?{style:'sng'}:undefined,strike:o.strike?'sngStrike':undefined,color:o.color,highlight:o.highlight,charSpacing:(o.charSpacing || 0)*pt || undefined,...(o.hyperlink?{hyperlink:o.hyperlink}:{})};
 }
 
 // object-fit and background-size, reproduced with a crop (cover) or a fitted box (contain).
