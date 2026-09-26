@@ -1,4 +1,4 @@
-import { exportManifest, inspectExportSlide, writePowerPoint } from './export.js';
+import { exportManifest, exportSummary, inspectExportSlide, writePowerPoint } from './export.js';
 import { createInspector } from './inspector.js';
 import { shapeHTML, layoutHTML } from './authoring.js';
 import { elementOperations, slideOperations, documentMeta, setDocumentMeta, pathTarget, reorderSections, copySlidesInto, ensureObjectIds, freshSlide, transferHead } from './editor-model.js';
@@ -2057,11 +2057,20 @@ window.dekShell = {
   },
   prepareExport(options={}) { if(stage.ok)stage.dek.edit.commitText(); return {...exportManifest(needDeck(),options,state.deck.baseHref), inspector:inspectExportSlide.toString()}; },
   writePowerPoint,
+  exportSummary,
   pasteContent,
   imagePicked,
   toast,
-  exportProgress(info) { const el=$('exportstatus');el.hidden=false;el.innerHTML=`<span>${info.status==='writing'?'Writing file…':`Exporting ${info.completed} of ${info.total} slides…`}</span><button data-cancel-export="${esc(info.id)}">Cancel</button>`; },
-  exportResult(info) { const el=$('exportstatus');el.hidden=false;el.innerHTML=`<div><strong>${info.status==='cancelled'?'Export cancelled':info.error?esc(info.error):'Exported '+esc(info.path?.split('/').pop())}</strong>${info.warnings?.length?'<details><summary>'+info.warnings.length+' image fallbacks</summary>'+info.warnings.map(w=>'<p>'+esc(w)+'</p>').join('')+'</details>':''}</div>${info.path?'<button data-reveal-export="'+esc(info.path)+'">Show file</button>':''}<button data-dismiss-export aria-label="Dismiss export status">×</button>`; },
+  exportProgress(info) {
+    const el=$('exportstatus');el.hidden=false;
+    if(info.status==='ready'){
+      const lines=info.summary?.lines || [];const details=exportDetails(info);
+      el.innerHTML=`<div><strong>Ready to save</strong><p class="export-summary">${lines.map(esc).join(' · ')}</p>${details}</div><button class="primary" data-commit-export="${esc(info.id)}">Save…</button><button data-cancel-export="${esc(info.id)}">Cancel</button>`;
+      return;
+    }
+    el.innerHTML=`<span>${info.status==='writing'?'Writing file…':info.status==='preparing'?'Preparing export…':`Analyzing ${info.completed} of ${info.total} slides…`}</span><button data-cancel-export="${esc(info.id)}">Cancel</button>`;
+  },
+  exportResult(info) { const el=$('exportstatus');el.hidden=false;el.innerHTML=`<div><strong>${info.status==='cancelled'?'Export cancelled':info.error?esc(info.error):'Exported '+esc(info.path?.split('/').pop())}</strong>${info.summary?.lines?.length?'<p class="export-summary">'+info.summary.lines.map(esc).join(' · ')+'</p>':''}${exportDetails(info)}</div>${info.path?'<button data-reveal-export="'+esc(info.path)+'">Show file</button>':''}<button data-dismiss-export aria-label="Dismiss export status">×</button>`; },
   rpcSaved(info) { state.rpcPending.delete(info.path); if(info.path!==state.deck?.path)return; if(info.ok && info.content){state.persistedRaw=info.content;setSaveState('saved');pumpSave();} else if(!info.ok){state.conflict=!!info.conflict;state.pendingSave={path:info.path,content:model().raw};$('conflictbar').hidden=!info.conflict;setSaveState('error');toast(info.conflict?'File changed on disk. Save a copy or reload.':'Save failed. Your edits are retained; retry Save or save a copy.');} },
   imageDropped(info) { if (state.deck && info && info.path) { if (!state.editing) setEditing(true); send({ type: 'importImage', path: info.path }); } },
   snapshotRect() {
@@ -2171,7 +2180,14 @@ function showSlideMenu() {
   popover(`<h2>${selectedSlides().length || 1} selected</h2><button data-batch="copy">Copy slides</button><button data-batch="up">Move up</button><button data-batch="down">Move down</button><button data-batch="section">Move to section…</button><button data-batch="newsection">Create section…</button><button data-batch="delete" class="danger">Delete slides</button>`,state.overview?$('overviewactions'):$('slideactions'));
 }
 function showExportMenu() {
-  popover(`<h2>Export deck</h2><label>Format<select id="exportformat"><option value="pptx-editable">PowerPoint · editable</option><option value="pptx-image">PowerPoint · preserve appearance</option><option value="pdf">PDF</option></select></label><label class="check"><input id="exporthidden" type="checkbox">Include hidden slides</label><p class="field-hint">Editable PowerPoint keeps standard text, shapes and images editable. Complex visuals become images. Animations export as stills.</p><button class="wide-button primary" data-workspace="export">Export…</button><div id="exportprogress" role="status"></div>`,$('exportbtn'));
+  popover(`<h2>Export deck</h2><label>Format<select id="exportformat"><option value="pptx">PowerPoint (.pptx)</option><option value="pdf">PDF</option></select></label><label class="check"><input id="exporthidden" type="checkbox">Include hidden slides</label><p class="field-hint">Built for Google Slides: upload the file to Drive, then Open with → Google Slides. Text, shapes and images stay editable; effects PowerPoint can't hold are simplified, and you see what changed before saving.</p><button class="wide-button primary" data-workspace="export">Export…</button><div id="exportprogress" role="status"></div>`,$('exportbtn'));
+}
+// What the export simplified, grouped by kind with the slides it touched.
+function exportDetails(info) {
+  const groups={};for(const w of info.warnings || []){if(typeof w!=='object')continue;(groups[w.kind] ||= []).push(w);}
+  const names={raster:'Shown as images','transform-rasterized':'3D or skewed, shown as images','gradient-flattened':'Gradients flattened','shadow-simplified':'Shadows simplified','effect-dropped':'Effects dropped','pseudo-omitted':'Decorations omitted'};
+  const rows=Object.entries(groups).map(([kind,list])=>`<p><b>${esc(names[kind] || kind)}</b> — ${[...new Set(list.map(w=>'slide '+w.slide))].map(esc).join(', ')}</p>`);
+  return rows.length?`<details><summary>Details</summary>${rows.join('')}</details>`:'';
 }
 function readImageFile(file) {
   if(!state.deck){toast('Open or create a deck before adding an image');return;}
@@ -2231,7 +2247,7 @@ $('workspacepopover').addEventListener('click',e=>{
   const pop=$('workspacepopover');
   if(b.dataset.addShape){pop.hidden=true;insertHtml(shapeHTML({shape:b.dataset.addShape}));}
   else if(b.dataset.addSlide){pop.hidden=true;addSlideAfter(state.index,layoutHTML(b.dataset.addSlide));}
-  else if(b.dataset.workspace){const action=b.dataset.workspace;if(action==='export'){const [format,mode]=$('exportformat').value.split('-');send({type:'exportDeck',format,mode:mode || 'editable',includeHidden:$('exporthidden').checked});pop.hidden=true;return;}pop.hidden=true;({new:()=>send({type:'newDeck'}),open:()=>send({type:'openDialog'}),duplicate:()=>send({type:'saveAs'}),rename:()=>{setEditing(true);stage.dek.edit.clear();requestAnimationFrame(()=>$('inspector').querySelector('[data-field="title"]')?.focus());},overview:()=>setOverview(true),presenter:()=>send({type:'presenter',open:true}),agent:()=>setAgentOpen(true)})[action]?.();}
+  else if(b.dataset.workspace){const action=b.dataset.workspace;if(action==='export'){send({type:'exportDeck',format:$('exportformat').value,includeHidden:$('exporthidden').checked});pop.hidden=true;return;}pop.hidden=true;({new:()=>send({type:'newDeck'}),open:()=>send({type:'openDialog'}),duplicate:()=>send({type:'saveAs'}),rename:()=>{setEditing(true);stage.dek.edit.clear();requestAnimationFrame(()=>$('inspector').querySelector('[data-field="title"]')?.focus());},overview:()=>setOverview(true),presenter:()=>send({type:'presenter',open:true}),agent:()=>setAgentOpen(true)})[action]?.();}
   else if(b.dataset.batch){const a=b.dataset.batch;pop.hidden=true;if(a==='copy')copySelection();else if(a==='up'||a==='down'){const ids=selectedSlides();batchSlides('move',ids,{to:Math.max(0,Math.min(...ids)+(a==='up'?-1:1))});}else if(a==='section'){popover('<h2>Move to section</h2>'+documentMeta(model()).sections.map(g=>`<button data-move-section="${g.id}">${esc(g.name)}</button>`).join('')+'<button data-move-section="">No section</button>');}else if(a==='newsection'){popover('<h2>Create section</h2><label>Name<input id="sectionname" value="Untitled section"></label><button data-create-section="true">Create and add selected slides</button>');}else batchSlides(a);}
   else if(b.hasAttribute('data-move-section')){batchSlides('section',selectedSlides(),{id:b.dataset.moveSection});pop.hidden=true;}
   else if(b.dataset.createSection){const meta=documentMeta(model()),id='section-'+crypto.randomUUID();meta.sections.push({id,name:$('sectionname').value.trim() || 'Untitled section',collapsed:false});let m=parseDeck(setDocumentMeta(model(),meta));const ids=selectedSlides();const raw=ids.length?slideOperations(m,ids,'section',{id}):m.raw;applyRaw(raw,{label:'create section with slides'});pop.hidden=true;}
@@ -2287,6 +2303,6 @@ window.__dek = { state, settings, stage, thumbs, model, command, rpc, themes: { 
 send({ type: 'ready', presenter: PRESENTER_MODE });
 if (!PRESENTER_MODE) send({ type: 'themesLoad' });
 
-$('exportstatus').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.cancelExport)send({type:'cancelExport',id:b.dataset.cancelExport});if(b.dataset.revealExport)send({type:'revealExport',path:b.dataset.revealExport});if(b.hasAttribute('data-dismiss-export'))$('exportstatus').hidden=true;});
+$('exportstatus').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.cancelExport)send({type:'cancelExport',id:b.dataset.cancelExport});if(b.dataset.commitExport)send({type:'commitExport',id:b.dataset.commitExport});if(b.dataset.revealExport)send({type:'revealExport',path:b.dataset.revealExport});if(b.hasAttribute('data-dismiss-export'))$('exportstatus').hidden=true;});
 
 $('emptyslide').addEventListener('click',()=>addSlideAfter(-1,layoutHTML('blank')));

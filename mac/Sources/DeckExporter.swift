@@ -14,14 +14,16 @@ final class DeckExporter: NSObject, WKNavigationDelegate {
     private let pdf = PDFDocument()
     private var position = 0
     private var options: [String: Any] = [:]
-    private var output: URL!
+    private var output: URL?
     private var complete = false
     private var renderDirectory: URL?
     private var finish: (([String: Any]) -> Void)?
-    var status: [String: Any] = ["status": "preparing", "completed": 0, "total": 0, "warnings": [String]()]
+    var status: [String: Any] = ["status": "preparing", "completed": 0, "total": 0, "warnings": [[String: Any]]()]
     var onProgress: (([String: Any]) -> Void)?
+    var format: String { options["format"] as? String ?? "pdf" }
 
-    func start(shell: WKWebView, options: [String: Any], output: URL, done: @escaping ([String: Any]) -> Void) {
+    /// Without an output URL the job stops at "ready" with a summary and waits for `commit(to:)`.
+    func start(shell: WKWebView, options: [String: Any], output: URL?, done: @escaping ([String: Any]) -> Void) {
         self.shell = shell; self.options = options; self.output = output; self.finish = done
         shell.callAsyncJavaScript("return window.dekShell.prepareExport(options);", arguments: ["options": options], in: nil, in: .page) { [weak self] result in
             guard let self, !self.complete else { return }
@@ -54,7 +56,7 @@ final class DeckExporter: NSObject, WKNavigationDelegate {
             }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 300) { [weak self] in
-            guard let self, !self.complete else { return }; self.fail("Export timed out. Check fonts, images, and embedded content.")
+            guard let self, !self.complete, self.status["status"] as? String != "ready" else { return }; self.fail("Export timed out. Check fonts, images, and embedded content.")
         }
     }
     func cancel() { end(["status": "cancelled", "completed": position, "total": indices.count]) }
@@ -75,8 +77,9 @@ final class DeckExporter: NSObject, WKNavigationDelegate {
                 guard var slide = value as? [String: Any], let rect = self.rect(slide["rect"]) else { self.fail("Slide did not return render bounds"); return }
                 let notes = self.manifest["notes"] as? [String] ?? []
                 slide["notes"] = self.position < notes.count ? notes[self.position] : ""
-                var warnings = self.status["warnings"] as? [String] ?? []
-                if self.options["format"] as? String == "pptx" && self.options["mode"] as? String != "image" { warnings += (slide["warnings"] as? [String] ?? []).map { "Slide \(self.indices[self.position] + 1): \($0)" } }
+                var warnings = self.status["warnings"] as? [[String: Any]] ?? []
+                if self.options["format"] as? String == "pptx" { let n = self.indices[self.position] + 1; warnings += (slide["warnings"] as? [[String: Any]] ?? []).map { var w = $0; w["slide"] = n; return w } }
+                slide.removeValue(forKey: "warnings")
                 self.status["warnings"] = warnings
                 let format = self.options["format"] as? String ?? "pdf"
                 if format == "pdf" {
@@ -86,7 +89,7 @@ final class DeckExporter: NSObject, WKNavigationDelegate {
                         guard case .success(let data) = res, let page = PDFDocument(data: data)?.page(at: 0) else { self.fail("Could not render PDF page \(self.position + 1)"); return }
                         self.pdf.insert(page, at: self.pdf.pageCount); self.advance()
                     }
-                } else if format == "png" || format == "overview" || self.options["mode"] as? String == "image" {
+                } else if format == "png" || format == "overview" {
                     self.capture(rect) { data in
                         guard !self.complete else { return }
                         guard let data else { self.fail("Could not capture slide \(self.position + 1)"); return }
@@ -105,7 +108,7 @@ final class DeckExporter: NSObject, WKNavigationDelegate {
         var nodes = slide["nodes"] as? [[String: Any]] ?? []
         if at >= nodes.count { slides.append(slide); advance(); return }
         guard nodes[at]["type"] as? String == "image", let rect = rect(nodes[at]["capture"]) else { captureNodes(slide, at: at + 1); return }
-        capture(rect) { [weak self] data in
+        capture(rect, scale: nodes[at]["scale"] as? Double) { [weak self] data in
             guard let self, !self.complete else { return }
             guard let data else { self.fail("Could not capture an image on slide \(self.position + 1)"); return }
             nodes[at]["image"] = data.base64EncodedString(); nodes[at].removeValue(forKey: "capture")
@@ -117,9 +120,12 @@ final class DeckExporter: NSObject, WKNavigationDelegate {
               let w = r["w"] as? Double, let h = r["h"] as? Double, w > 0, h > 0 else { return nil }
         return CGRect(x: x, y: y, width: w, height: h)
     }
-    private func capture(_ rect: CGRect, done: @escaping (Data?) -> Void) {
+    /// `scale` is output pixels per CSS pixel (PowerPoint image fallbacks); without it the capture is a thumbnail.
+    private func capture(_ rect: CGRect, scale: Double? = nil, done: @escaping (Data?) -> Void) {
         guard let view else { done(nil); return }
-        let cfg = WKSnapshotConfiguration(); cfg.rect = rect; cfg.snapshotWidth = NSNumber(value: min(rect.width, 1920) / 2); cfg.afterScreenUpdates = true
+        let cfg = WKSnapshotConfiguration(); cfg.rect = rect; cfg.afterScreenUpdates = true
+        if let scale { cfg.snapshotWidth = NSNumber(value: Double(rect.width) * scale / Double(host?.backingScaleFactor ?? 1)) }
+        else { cfg.snapshotWidth = NSNumber(value: min(rect.width, 1920) / 2) }
         view.takeSnapshot(with: cfg) { image, _ in
             guard let tiff = image?.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) else { done(nil); return }
             done(rep.representation(using: .png, properties: [:]))
@@ -127,15 +133,42 @@ final class DeckExporter: NSObject, WKNavigationDelegate {
     }
     private func advance() { position += 1; status["completed"] = position; next() }
     private func save() {
+        guard !complete else { return }
+        if options["format"] as? String == "overview" { status["status"] = "writing"; onProgress?(status); saveOverview();return }
+        if options["format"] as? String == "pdf" {
+            guard pdf.pageCount == indices.count else { fail("PDF is incomplete; no file was saved"); return }
+            status["summary"] = ["slides": indices.count, "lines": ["\(indices.count) \(indices.count == 1 ? "slide" : "slides")"]]
+            if output == nil { ready() } else { assemble() }
+            return
+        }
+        guard let shell else { fail("The editor closed before export finished"); return }
+        // The summary only needs text runs; images stay on the native side.
+        let light = slides.map { s -> [String: Any] in ["nodes": (s["nodes"] as? [[String: Any]] ?? []).filter { $0["type"] as? String == "text" }] }
+        shell.callAsyncJavaScript("return window.dekShell.exportSummary(payload);", arguments: ["payload": ["slides": light, "warnings": status["warnings"] ?? []]], in: nil, in: .page) { [weak self] result in
+            guard let self, !self.complete else { return }
+            if case .success(let value) = result, let summary = value as? [String: Any] { self.status["summary"] = summary }
+            if self.output == nil { self.ready() } else { self.assemble() }
+        }
+    }
+    /// Extraction is done; the renderer is released and the result waits for a destination.
+    private func ready() {
+        view?.stopLoading(); host?.close(); host = nil; view = nil
+        if let dir = renderDirectory { try? FileManager.default.removeItem(at: dir) }; renderDirectory = nil
+        status["status"] = "ready"; onProgress?(status)
+    }
+    func commit(to url: URL) {
+        guard !complete, status["status"] as? String == "ready" else { return }
+        output = url; assemble()
+    }
+    private func assemble() {
         guard !complete else { return }; status["status"] = "writing"
         onProgress?(status)
-        if options["format"] as? String == "overview" { saveOverview();return }
         if options["format"] as? String == "pdf" {
-            guard pdf.pageCount == indices.count, let data = pdf.dataRepresentation() else { fail("PDF is incomplete; no file was saved"); return }
+            guard let data = pdf.dataRepresentation() else { fail("PDF is incomplete; no file was saved"); return }
             write(data); return
         }
         guard let shell else { fail("The editor closed before export finished"); return }
-        let payload: [String: Any] = ["title": manifest["title"] ?? "Deck", "size": manifest["size"] ?? [:], "slides": slides, "mode": options["mode"] ?? "editable"]
+        let payload: [String: Any] = ["title": manifest["title"] ?? "Deck", "lang": manifest["lang"] ?? "en-US", "size": manifest["size"] ?? [:], "slides": slides]
         shell.callAsyncJavaScript("return await window.dekShell.writePowerPoint(payload);", arguments: ["payload": payload], in: nil, in: .page) { [weak self] result in
             guard let self, !self.complete else { return }
             guard case .success(let value) = result, let base64 = value as? String, let data = Data(base64Encoded: base64) else { self.fail("PowerPoint could not be assembled"); return }
@@ -164,9 +197,12 @@ final class DeckExporter: NSObject, WKNavigationDelegate {
     private func write(_ data: Data) {
         guard !complete else { return }
         do {
+            guard let output else { fail("No destination was chosen"); return }
             try FileManager.default.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
             try data.write(to: output, options: .atomic)
-            end(["status": "completed", "path": output.path, "completed": indices.count, "total": indices.count, "warnings": status["warnings"] ?? []])
+            var result: [String: Any] = ["status": "completed", "path": output.path, "completed": indices.count, "total": indices.count, "warnings": status["warnings"] ?? []]
+            if let summary = status["summary"] { result["summary"] = summary }
+            end(result)
         } catch { fail("Could not save export: \(error.localizedDescription)") }
     }
     private func fail(_ message: String) { end(["status": "failed", "error": message, "completed": position, "total": indices.count]) }
