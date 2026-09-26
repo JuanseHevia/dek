@@ -8,7 +8,7 @@ Dek's PowerPoint export targets Google Slides' Drive import (upload the `.pptx`,
 | 2 | Line spacing in points vs multiple | points (`spcPts`) | ✅ identical; points kept | switch to multiples |
 | 3 | Letter spacing | points | ❌ ignored: all three lines render the same → boxes widen by the lost negative tracking | — |
 | 4 | Shape shadow, rounded corners | native shadow and radius | ✅ shadows and radii render; large radii clamp to a pill | drop the shadow silently |
-| 5 | Image crop (`srcRect`) for `object-fit: cover` | crop | ⚠️ inconclusive (symmetric probe image); probe fixed to four color bands, re-check | pre-crop in the renderer |
+| 5 | Image crop (`srcRect`) for `object-fit: cover` | crop | ✅ the right image shows only the two middle bands, undistorted; crops survive | pre-crop in the renderer |
 | 6 | Width slack on wrapped text | +4% (+12% single line) | ✅ same break in all three; ❌ `wrap:false` ignored (the line wrapped) → single-line boxes get +12% | pick the smallest slack with no extra wraps |
 | 7 | Shape and text transparency | native | ✅ shape transparency; ❌ text transparency renders opaque | — |
 | 8 | No autofit | never shrink | ✅ both keep 32pt and overflow | — |
