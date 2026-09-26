@@ -32,6 +32,13 @@ async function slideXml(nodes, background = { color: 'ffffff', transparency: 0 }
   return { zip, xml: await zip.file('ppt/slides/slide1.xml').async('string') };
 }
 
+test('natural line heights come from the font metadata, with built-in fallbacks', async () => {
+  const { naturalLineHeight } = await import('../src/fonts.js');
+  assert.equal(naturalLineHeight('Plus Jakarta Sans ExtraBold'), 1.26);
+  assert.equal(naturalLineHeight('Arial'), 1.15);
+  assert.equal(naturalLineHeight('Unknown'), 1.2);
+});
+
 test('font stacks resolve to faces Google Slides can render, reporting replacements', () => {
   assert.deepEqual(resolveFont('"Plus Jakarta Sans", system-ui, sans-serif'), { face: 'Plus Jakarta Sans', replaced: null });
   assert.deepEqual(resolveFont('system-ui, -apple-system, sans-serif'), { face: 'Inter', replaced: 'system-ui' });
@@ -59,7 +66,8 @@ test('text boxes carry no autofit, real line spacing, Slides faces and CSS paddi
   assert.ok(!/ b="1"/.test(xml), 'weight 500 is not bold');
   assert.match(xml, /wrap="none"/, 'single-line boxes do not wrap');
   const pt = 13.333333 / 1920 * 72;
-  assert.match(xml, new RegExp(`<a:spcPts val="${Math.round(48 * pt * 100)}"/>`));
+  // Slides applies line spacing to the font's natural line height (Inter: ~1.21), not its size.
+  assert.match(xml, new RegExp(`<a:spcPct val="${Math.round(Math.round(48 / 40 / 1.2099609375 * 1000) / 1000 * 100000)}"/>`));
   // CSS padding is [top, right, bottom, left] = [10, 20, 30, 40]; insets are EMU (12700 per pt).
   const ins = side => +xml.match(new RegExp(`${side}Ins="(\\d+)"`))[1];
   assert.equal(Math.round(ins('l') / 12700 / pt), 40);

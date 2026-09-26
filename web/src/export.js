@@ -77,6 +77,9 @@ export async function inspectExportSlide(index, step='last') {
   function shapeOf(cs,r){const rad=radiusOf(cs,r);if(rad<=0)return 'rectangle';if(rad>=Math.min(r.w,r.h)/2-.5 && Math.abs(r.w-r.h)<1)return 'ellipse';return 'rounded';}
 
   function rasterLeaf(el,r,kind){
+    // Only the part inside the slide is visible; capturing beyond it adds blank canvas.
+    const W=origin.width/scale,H=origin.height/scale,x0=Math.max(0,r.x),y0=Math.max(0,r.y),x1=Math.min(W,r.x+r.w),y1=Math.min(H,r.y+r.h);
+    r={x:x0,y:y0,w:x1-x0,h:y1-y0};
     if(r.w<=0 || r.h<=0)return;
     const s=Math.min(r.w<200 && r.h<200?4:2,4000/Math.max(r.w,r.h));
     nodes.push({type:'image',...r,rotate:0,opacity:1,scale:s,capture:{x:origin.x+r.x*scale,y:origin.y+r.y*scale,w:r.w*scale,h:r.h*scale}});
