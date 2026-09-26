@@ -302,7 +302,7 @@ TOOLS.push(
   tool('import_image','Copy a local image into the deck assets folder and insert it as an editable image. Returns its relative URL after the slide is saved.',{slide:SLIDE,path:{type:'string'},alt:{type:'string'},x:{type:'number'},y:{type:'number'},width:{type:'number'}},['path']),
   tool('undo','Undo the last manual or agent edit to the open deck.',{}),
   tool('redo','Redo the most recently undone edit to the open deck.',{}),
-  tool('export_deck','Start an isolated local export job. format is pdf or pptx; pptx mode is editable (default) or image. Hidden slides are excluded by default. Poll get_export_status for the completed path and fallback warnings.',{path:{type:'string'},format:{type:'string',enum:['pdf','pptx']},mode:{type:'string',enum:['editable','image']},includeHidden:{type:'boolean'},overwrite:{type:'boolean'}},['path','format']),
+  tool('export_deck','Start an isolated local export job. format is pdf or pptx. PowerPoint is always native and built for Google Slides import: text, shapes and images stay editable, fonts map to Google Fonts, effects PowerPoint cannot hold are simplified. Hidden slides are excluded by default. Poll get_export_status for the saved path, structured warnings ({slide, kind, detail}) and a summary.',{path:{type:'string'},format:{type:'string',enum:['pdf','pptx']},includeHidden:{type:'boolean'},overwrite:{type:'boolean'}},['path','format']),
   tool('get_export_status','Read export progress, terminal status, warnings and saved path. A path is returned only after a successful write.',{job_id:{type:'string'}},['job_id']),
   tool('cancel_export','Cancel an export job. The destination file is not replaced by incomplete output.',{job_id:{type:'string'}},['job_id'])
 );

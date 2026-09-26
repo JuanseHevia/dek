@@ -580,6 +580,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         case "exportPdf": exportPdf(nil)
         case "exportDeck": exportDialog(options: body)
         case "cancelExport": if let id = body["id"] as? String { exports[id]?.cancel() }
+        case "commitExport": if let id = body["id"] as? String { commitExportDialog(id) }
         case "revealExport": if let path = body["path"] as? String { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath:path)]) }
         case "importImageData":
             if let raw = body["data"] as? String, let data = Data(base64Encoded: String(raw.split(separator: ",", maxSplits: 1).last ?? "")) {
@@ -828,19 +829,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     // MARK: PDF export (one page per slide, vector)
 
     @objc func exportPdf(_ sender: Any?) { exportDialog(options: ["format": "pdf"]) }
+    /// Analyze first, then ask where to save: the summary of what will be simplified comes before the file.
     func exportDialog(options: [String: Any]) {
         guard currentURL != nil else { return }
-        let format = options["format"] as? String ?? "pdf"
+        for (_, job) in exports where job.status["status"] as? String == "ready" { job.cancel() }
+        var args = options; args["ui"] = true; args.removeValue(forKey: "path")
+        _ = startExport(args) { [weak self] result in
+            guard let self else { return }
+            self.callJS(self.webView, "window.dekShell.exportResult(\(self.json(result)))")
+        }
+    }
+    func commitExportDialog(_ id: String) {
+        guard let job = exports[id], job.status["status"] as? String == "ready" else { return }
+        let format = job.format
         let panel = NSSavePanel()
         panel.allowedContentTypes = format == "pdf" ? [.pdf] : [UTType(filenameExtension: "pptx") ?? .data]
         panel.nameFieldStringValue = (currentURL?.deletingPathExtension().lastPathComponent ?? "Deck") + "." + format
         panel.directoryURL = currentURL?.deletingLastPathComponent()
-        panel.beginSheetModal(for: window) { [weak self] response in
-            guard let self, response == .OK, let out = panel.url else { return }
-            var args = options; args["path"] = out.path; args["ui"] = true
-            _ = self.startExport(args) { result in
-                self.callJS(self.webView, "window.dekShell.exportResult(\(self.json(result)))")
-            }
+        panel.beginSheetModal(for: window) { response in
+            guard response == .OK, let out = panel.url else { return }
+            job.commit(to: out)
         }
     }
     @discardableResult
@@ -848,7 +856,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         let job = DeckExporter(); exports[job.id] = job
         let jobID=job.id
         if args["ui"] as? Bool == true { job.onProgress = { [weak self] status in guard let self else {return};var info=status;info["id"]=jobID;self.callJS(self.webView,"window.dekShell.exportProgress(\(self.json(info)))") } }
-        let out = URL(fileURLWithPath: args["path"] as? String ?? FileManager.default.temporaryDirectory.appendingPathComponent("Dek-\(job.id).pdf").path)
+        let out: URL? = (args["path"] as? String).map { URL(fileURLWithPath: $0) }
+            ?? (args["ui"] as? Bool == true ? nil : FileManager.default.temporaryDirectory.appendingPathComponent("Dek-\(job.id).pdf"))
         job.start(shell: webView, options: args, output: out, done: done)
         return job.id
     }
@@ -864,6 +873,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
         if tool == "export_deck" {
             guard let path = args["path"] as? String, path.hasPrefix("/"), let format = args["format"] as? String, ["pdf", "pptx"].contains(format), path.lowercased().hasSuffix("." + format) else { done(["ok": false, "error": "Provide an absolute path ending in .pdf or .pptx and matching format"]); return }
+            if let mode = args["mode"] as? String, mode != "editable" { done(["ok": false, "error": "mode was removed; PowerPoint export is always editable"]); return }
             if FileManager.default.fileExists(atPath: path) && args["overwrite"] as? Bool != true { done(["ok": false, "error": "File exists. Choose a new path or pass overwrite=true."]); return }
             let id = startExport(args) { _ in }; done(["ok": true, "result": ["job_id": id, "status": "preparing"]]); return
         }
