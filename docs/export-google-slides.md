@@ -14,4 +14,4 @@ Dek's PowerPoint export targets Google Slides' Drive import (upload the `.pptx`,
 | 8 | No autofit | never shrink | ✅ both keep 32pt and overflow | — |
 | 9 | Highlight, soft breaks, bullets | native | ✅ highlight, soft break and bullets all render | draw highlights as shapes behind the text |
 
-Checked 2026-09-26 in Google Slides, with the `.pptx` opened from Drive in Office-compatibility mode (not yet converted with File → Save as Google Slides).
+Checked 2026-09-26 in Google Slides, both with the `.pptx` opened from Drive in Office-compatibility mode and after File → Save as Google Slides; the two render the same.
