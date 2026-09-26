@@ -103,8 +103,9 @@ call('write_deck',{'html':old})
 
 # Export jobs run without changing editor selection or position.
 call('goto',{'slide':3});selected=call('get_selection');before=call('get_state');jobs={}
-for fmt,mode,name,include in [('pdf','editable','deck.pdf',False),('pptx','editable','editable.pptx',False),('pptx','image','appearance.pptx',False),('pdf','editable','all-slides.pdf',True)]:
-    jobs[name]=call('export_deck',{'format':fmt,'mode':mode,'path':str(root/name),'includeHidden':include,'overwrite':True})['job_id']
+for fmt,name,include in [('pdf','deck.pdf',False),('pptx','editable.pptx',False),('pdf','all-slides.pdf',True)]:
+    jobs[name]=call('export_deck',{'format':fmt,'path':str(root/name),'includeHidden':include,'overwrite':True})['job_id']
+check('image-only PowerPoint mode is refused',not call('export_deck',{'format':'pptx','mode':'image','path':str(root/'appearance.pptx'),'overwrite':True},False)['ok'])
 for name,job in jobs.items():
     deadline=time.time()+90
     while True:
