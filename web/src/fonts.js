@@ -32,6 +32,20 @@ export function resolveFont(stack) {
   return { face: FALLBACK, replaced: wanted };
 }
 
+const WEIGHT_NAMES = { 100: 'Thin', 200: 'ExtraLight', 300: 'Light', 500: 'Medium', 600: 'SemiBold', 700: 'Bold', 800: 'ExtraBold', 900: 'Black' };
+
+/**
+ * Google Slides renders a Google Fonts weight when the typeface names it ("Plus Jakarta Sans
+ * Medium"), so each run gets the nearest weight the family ships. Other fonts only have bold.
+ * @returns {{face: string, bold: boolean}}
+ */
+export function weightedFace(face, weight = 400) {
+  const available = googleFontWeights(face);
+  if (!available.length) return { face, bold: weight >= 600 };
+  const nearest = available.reduce((best, w) => Math.abs(w - weight) < Math.abs(best - weight) || (Math.abs(w - weight) === Math.abs(best - weight) && w > best) ? w : best, available[0]);
+  return nearest === 400 || !WEIGHT_NAMES[nearest] ? { face, bold: false } : { face: `${face} ${WEIGHT_NAMES[nearest]}`, bold: false };
+}
+
 export function googleFontWeights(face) {
   const w = GOOGLE_FONTS[face];
   return w ? [...w].map(d => +d * 100) : [];
