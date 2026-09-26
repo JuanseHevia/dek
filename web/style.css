@@ -11,6 +11,8 @@
   --ink-3: oklch(0.60 0.008 260);
   --spot: oklch(0.83 0.12 82);
   --spot-soft: oklch(0.83 0.12 82 / 0.14);
+  --spot-strong: oklch(0.87 0.12 82);
+  --on-spot: oklch(0.17 0.02 82);
   --danger: oklch(0.70 0.16 25);
   --shadow: 0 1px 2px oklch(0 0 0 / 0.35), 0 6px 16px oklch(0 0 0 / 0.30);
   --focus: var(--spot);
@@ -38,6 +40,8 @@
   --ink-3: oklch(0.49 0.010 260);
   --spot: oklch(0.50 0.13 70);
   --spot-soft: oklch(0.50 0.13 70 / 0.14);
+  --spot-strong: oklch(0.45 0.13 70);
+  --on-spot: oklch(0.985 0.01 82);
   --danger: oklch(0.58 0.18 25);
   --shadow: 0 1px 2px oklch(0.22 0.01 260 / 0.08), 0 6px 16px oklch(0.22 0.01 260 / 0.10);
   color-scheme: light;
@@ -54,6 +58,8 @@
     --ink-3: oklch(0.49 0.010 260);
     --spot: oklch(0.50 0.13 70);
     --spot-soft: oklch(0.50 0.13 70 / 0.14);
+    --spot-strong: oklch(0.45 0.13 70);
+    --on-spot: oklch(0.985 0.01 82);
     --danger: oklch(0.58 0.18 25);
     --shadow: 0 1px 2px oklch(0.22 0.01 260 / 0.08), 0 6px 16px oklch(0.22 0.01 260 / 0.10);
     color-scheme: light;
@@ -854,3 +860,52 @@ body.editing .pill.quiet {opacity:1;}
 .export-status .export-summary{margin:4px 0 0;color:var(--muted);}
 .export-status button.primary{font-weight:600;}
 body.presenting .export-status{display:none!important;}
+
+/* ---------- export: the step after editing ---------- */
+
+.pillbtn.exportbtn {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin-left: 4px; padding: 5px 12px 5px 10px;
+  color: var(--on-spot); background: var(--spot); font-weight: 600;
+  box-shadow: 0 1px 2px oklch(0 0 0 / 0.25);
+}
+.pillbtn.exportbtn:hover { color: var(--on-spot); background: var(--spot-strong); }
+.pillbtn.exportbtn:active { transform: translateY(0.5px); }
+.pillbtn.exportbtn:disabled { color: var(--ink-3); background: var(--raised-2); box-shadow: none; }
+.pillbtn.exportbtn svg { flex: none; margin-top: -1px; }
+.pillbtn.exportbtn:focus-visible { outline: 2px solid var(--spot); outline-offset: 2px; }
+
+.workspace-popover.export-popover { width: 384px; padding: 20px; border-radius: 14px; }
+.export-popover h2 { margin-bottom: 14px; }
+.export-formats { display: grid; gap: 8px; }
+.export-popover .export-format {
+  position: relative; display: flex; flex-direction: row; align-items: center; gap: 14px; margin: 0; text-align: left;
+  padding: 12px 14px 12px 12px; border: 1px solid var(--hairline); border-radius: 10px;
+  background: var(--raised); cursor: pointer;
+  transition: border-color 150ms var(--ease), background 150ms var(--ease);
+}
+.export-format:hover { background: var(--raised-2); }
+.export-format input { position: absolute; opacity: 0; pointer-events: none; }
+.export-format-icon {
+  flex: none; display: grid; place-items: center; width: 42px; height: 42px;
+  border-radius: 9px; background: var(--raised-2); color: var(--ink-2);
+  transition: background 150ms var(--ease), color 150ms var(--ease);
+}
+.export-format-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.export-format-text b { font-size: 14px; font-weight: 600; color: var(--ink); }
+.export-format-text small { font-size: 12px; color: var(--ink-2); line-height: 1.4; }
+.export-format:has(input:checked) { border-color: var(--spot); background: var(--spot-soft); }
+.export-format:has(input:checked) .export-format-icon { background: var(--spot); color: var(--on-spot); }
+.export-format:has(input:focus-visible) { outline: 2px solid var(--spot); outline-offset: 2px; }
+.export-popover .check { margin: 16px 0 6px; font-size: 13px; }
+.export-popover .field-hint { font-size: 12px; margin: 0 0 16px; min-height: 3.2em; }
+.export-popover .export-go {
+  display: flex; text-align: center; padding: 0 16px; margin: 0; align-items: center; justify-content: center; gap: 8px; width: 100%;
+  min-height: 40px; border-radius: 10px; font-size: 14px; font-weight: 600;
+  color: var(--on-spot); background: var(--spot);
+  box-shadow: 0 1px 2px oklch(0 0 0 / 0.25), 0 4px 10px oklch(0 0 0 / 0.22);
+  transition: background 150ms var(--ease);
+}
+.export-popover .export-go:hover { background: var(--spot-strong); }
+.export-go:active { transform: translateY(0.5px); }
+.export-go:focus-visible { outline: 2px solid var(--spot); outline-offset: 2px; }

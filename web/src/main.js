@@ -2167,9 +2167,11 @@ function changeSection(id,patch={}) {
   applyRaw(setDocumentMeta(m,meta),{label:patch.remove?'remove section':'section settings'});
   return id;
 }
-function popover(html,anchor=$('deckname')) {
-  const el=$('workspacepopover');el.innerHTML=html;el.hidden=false;
-  const r=anchor.getBoundingClientRect();el.style.left=Math.max(8,Math.min(window.innerWidth-340,r.left))+'px';el.style.top=Math.min(window.innerHeight-260,r.bottom+8)+'px';
+function popover(html,anchor=$('deckname'),variant='') {
+  const el=$('workspacepopover');el.className='workspace-popover'+(variant?' '+variant:'');el.innerHTML=html;el.hidden=false;
+  const r=anchor.getBoundingClientRect(),w=el.offsetWidth || 340;
+  // The export popover hangs from the right end of the pill; the others from their anchor's left edge.
+  el.style.left=Math.max(8,Math.min(window.innerWidth-w-8,variant==='export-popover'?r.right-w:r.left))+'px';el.style.top=Math.min(window.innerHeight-260,r.bottom+8)+'px';
   requestAnimationFrame(()=>el.querySelector('input,button,select')?.focus());
 }
 function showInsertMenu(kind) {
@@ -2179,8 +2181,22 @@ function showInsertMenu(kind) {
 function showSlideMenu() {
   popover(`<h2>${selectedSlides().length || 1} selected</h2><button data-batch="copy">Copy slides</button><button data-batch="up">Move up</button><button data-batch="down">Move down</button><button data-batch="section">Move to section…</button><button data-batch="newsection">Create section…</button><button data-batch="delete" class="danger">Delete slides</button>`,state.overview?$('overviewactions'):$('slideactions'));
 }
+const EXPORT_ICON='<svg width="15" height="15" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 8.5V1.75M4.25 4.25 7 1.5l2.75 2.75"/><path d="M2.5 7.5v3.25c0 .69.56 1.25 1.25 1.25h6.5c.69 0 1.25-.56 1.25-1.25V7.5"/></svg>';
+const EXPORT_FORMATS=[
+  {id:'pptx',name:'PowerPoint',blurb:'Editable in Google Slides and PowerPoint',hint:'Upload the file to Drive, then Open with → Google Slides. Before saving you see what had to be simplified.',
+    icon:'<svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2.75" y="4" width="16.5" height="11" rx="1.5"/><path d="M11 15v3M7.5 18.5h7"/><path d="M6.5 8h5M6.5 11h3"/><path d="M14.25 12V9M16 12V7.5"/></svg>'},
+  {id:'pdf',name:'PDF',blurb:'Fixed layout for reading and printing',hint:'One page per slide, vector wherever WebKit can keep it. Fragments show in their final state.',
+    icon:'<svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 2.75h7.25l3.75 3.75v12a.75.75 0 0 1-.75.75H5.5a.75.75 0 0 1-.75-.75V3.5a.75.75 0 0 1 .75-.75Z"/><path d="M12.5 2.75V6.75h4"/><path d="M8 11h6M8 14h4.5"/></svg>'},
+];
+let exportFormat='pptx';
 function showExportMenu() {
-  popover(`<h2>Export deck</h2><label>Format<select id="exportformat"><option value="pptx">PowerPoint (.pptx)</option><option value="pdf">PDF</option></select></label><label class="check"><input id="exporthidden" type="checkbox">Include hidden slides</label><p class="field-hint">Built for Google Slides: upload the file to Drive, then Open with → Google Slides. Text, shapes and images stay editable; effects PowerPoint can't hold are simplified, and you see what changed before saving.</p><button class="wide-button primary" data-workspace="export">Export…</button><div id="exportprogress" role="status"></div>`,$('exportbtn'));
+  const format=EXPORT_FORMATS.find(f=>f.id===exportFormat) || EXPORT_FORMATS[0];
+  popover(`<h2>Export deck</h2>
+    <div class="export-formats" role="radiogroup" aria-label="Format">${EXPORT_FORMATS.map(f=>`<label class="export-format"><input type="radio" name="exportformat" value="${f.id}"${f===format?' checked':''}><span class="export-format-icon" aria-hidden="true">${f.icon}</span><span class="export-format-text"><b>${f.name}</b><small>${f.blurb}</small></span></label>`).join('')}</div>
+    <label class="check"><input id="exporthidden" type="checkbox">Include hidden slides</label>
+    <p class="field-hint" id="exporthint">${format.hint}</p>
+    <button class="export-go" data-workspace="export">${EXPORT_ICON}<span id="exportgolabel">Export ${format.name}…</span></button>`,$('exportbtn'),'export-popover');
+  requestAnimationFrame(()=>$('workspacepopover').querySelector('input[name="exportformat"]:checked')?.focus());
 }
 // What the export simplified, grouped by kind with the slides it touched.
 function exportDetails(info) {
@@ -2242,12 +2258,17 @@ $('sectionlist').addEventListener('click',e=>{
 });
 $('deckname').addEventListener('click',()=>popover('<h2>Deck</h2><button data-workspace="new">New deck… <kbd>⌘N</kbd></button><button data-workspace="open">Open… <kbd>⌘O</kbd></button><button data-workspace="duplicate">Duplicate deck…</button><button data-workspace="rename">Edit title</button><button data-workspace="overview">Slide overview</button><button data-workspace="presenter">Presenter view</button><button data-workspace="agent">Work with an agent</button>'));
 $('exportbtn').addEventListener('click',showExportMenu);
+$('workspacepopover').addEventListener('change',e=>{
+  if(e.target.name!=='exportformat')return;
+  exportFormat=e.target.value;const f=EXPORT_FORMATS.find(x=>x.id===exportFormat);
+  $('exporthint').textContent=f.hint;$('exportgolabel').textContent=`Export ${f.name}…`;
+});
 $('workspacepopover').addEventListener('click',e=>{
   const b=e.target.closest('button');if(!b)return;
   const pop=$('workspacepopover');
   if(b.dataset.addShape){pop.hidden=true;insertHtml(shapeHTML({shape:b.dataset.addShape}));}
   else if(b.dataset.addSlide){pop.hidden=true;addSlideAfter(state.index,layoutHTML(b.dataset.addSlide));}
-  else if(b.dataset.workspace){const action=b.dataset.workspace;if(action==='export'){send({type:'exportDeck',format:$('exportformat').value,includeHidden:$('exporthidden').checked});pop.hidden=true;return;}pop.hidden=true;({new:()=>send({type:'newDeck'}),open:()=>send({type:'openDialog'}),duplicate:()=>send({type:'saveAs'}),rename:()=>{setEditing(true);stage.dek.edit.clear();requestAnimationFrame(()=>$('inspector').querySelector('[data-field="title"]')?.focus());},overview:()=>setOverview(true),presenter:()=>send({type:'presenter',open:true}),agent:()=>setAgentOpen(true)})[action]?.();}
+  else if(b.dataset.workspace){const action=b.dataset.workspace;if(action==='export'){send({type:'exportDeck',format:exportFormat,includeHidden:$('exporthidden').checked});pop.hidden=true;return;}pop.hidden=true;({new:()=>send({type:'newDeck'}),open:()=>send({type:'openDialog'}),duplicate:()=>send({type:'saveAs'}),rename:()=>{setEditing(true);stage.dek.edit.clear();requestAnimationFrame(()=>$('inspector').querySelector('[data-field="title"]')?.focus());},overview:()=>setOverview(true),presenter:()=>send({type:'presenter',open:true}),agent:()=>setAgentOpen(true)})[action]?.();}
   else if(b.dataset.batch){const a=b.dataset.batch;pop.hidden=true;if(a==='copy')copySelection();else if(a==='up'||a==='down'){const ids=selectedSlides();batchSlides('move',ids,{to:Math.max(0,Math.min(...ids)+(a==='up'?-1:1))});}else if(a==='section'){popover('<h2>Move to section</h2>'+documentMeta(model()).sections.map(g=>`<button data-move-section="${g.id}">${esc(g.name)}</button>`).join('')+'<button data-move-section="">No section</button>');}else if(a==='newsection'){popover('<h2>Create section</h2><label>Name<input id="sectionname" value="Untitled section"></label><button data-create-section="true">Create and add selected slides</button>');}else batchSlides(a);}
   else if(b.hasAttribute('data-move-section')){batchSlides('section',selectedSlides(),{id:b.dataset.moveSection});pop.hidden=true;}
   else if(b.dataset.createSection){const meta=documentMeta(model()),id='section-'+crypto.randomUUID();meta.sections.push({id,name:$('sectionname').value.trim() || 'Untitled section',collapsed:false});let m=parseDeck(setDocumentMeta(model(),meta));const ids=selectedSlides();const raw=ids.length?slideOperations(m,ids,'section',{id}):m.raw;applyRaw(raw,{label:'create section with slides'});pop.hidden=true;}

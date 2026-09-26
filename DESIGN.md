@@ -12,7 +12,7 @@ Stage (default, dark):
 - Text: oklch(0.92 0.006 90) warm off-white
 - Text secondary: oklch(0.68 0.008 260)
 - Text faint: oklch(0.60 0.008 260), labels and numerals only; running copy never drops below Text secondary (4.5:1 on every chrome surface).
-- Spot (accent, the stage light): oklch(0.83 0.12 82) soft gold. Only for: current slide ring, focus, live-agent dot, active states, the edit selection outline.
+- Spot (accent, the stage light): oklch(0.83 0.12 82) soft gold. Only for: current slide ring, focus, live-agent dot, active states, the edit selection outline, and Export, the one filled button (text in On-spot oklch(0.17 0.02 82); hover Spot strong oklch(0.87 0.12 82)).
 - Danger: oklch(0.70 0.16 25), only for destructive confirmations.
 
 Daylight (light):
@@ -41,6 +41,7 @@ Daylight (light):
 
 ## Components
 - Pill buttons: text-only, 13px, hover = faint background, active = spot text.
+- Export: the step after editing, so the only filled button in the pill: spot background, upload icon + "Export", between Edit and Present. It opens a 384px popover with the two formats as selectable rows (42px icon tile, name, one-line purpose; the chosen one gets a spot border, spot-soft fill and a spot icon tile), a hint that follows the format, and a full-width spot button that names the action ("Export PowerPoint…"). Daylight uses Spot oklch(0.50 0.13 70) with On-spot near-white.
 - Navigator item: 12px mono index left, thumbnail right (1px hairline, 6px radius); current = 2px spot ring; drop indicator = 2px spot line.
 - Command palette / go-to: one centered card 560px, 15px input, list rows 32px, active row raised background.
 - Toasts: bottom center, raised chrome, 12px, 1.7s (3.2s when they carry an undo key), one at a time, never while presenting.
