@@ -48,5 +48,13 @@ export function weightedFace(face, weight = 400) {
 
 export function googleFontWeights(face) {
   const w = GOOGLE_FONTS[face];
-  return w ? [...w].map(d => +d * 100) : [];
+  return w ? [...w.split('|')[0]].map(d => +d * 100) : [];
+}
+
+// "Single" line spacing in PowerPoint and Slides is the font's own line height, not its size.
+const BUILT_IN_LINE_HEIGHT = { Arial: 1.15, 'Arial Black': 1.41, Calibri: 1.22, Cambria: 1.17, 'Century Gothic': 1.23, 'Comic Sans MS': 1.39, Consolas: 1.17, 'Courier New': 1.13, Georgia: 1.14, Impact: 1.22, Tahoma: 1.21, 'Times New Roman': 1.15, 'Trebuchet MS': 1.16, Verdana: 1.22 };
+export function naturalLineHeight(face) {
+  const base = face.replace(/ (Thin|ExtraLight|Light|Medium|SemiBold|Bold|ExtraBold|Black)$/, '');
+  const lh = +(GOOGLE_FONTS[base] || '').split('|')[1];
+  return lh || BUILT_IN_LINE_HEIGHT[base] || 1.2;
 }

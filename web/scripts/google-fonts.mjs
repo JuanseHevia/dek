@@ -1,5 +1,6 @@
-// Regenerate src/google-fonts.json: every Google Fonts family and the upright
-// weights it ships, as { "Family": "4567" } (digits are hundreds). Google
+// Regenerate src/google-fonts.json: every Google Fonts family, the upright weights
+// it ships and its natural line height, as { "Family": "4567|1.26" } (digits are
+// hundreds). Google
 // Slides renders any of these by name, so the PowerPoint export maps each
 // deck font onto this list. Run: node scripts/google-fonts.mjs
 import fs from 'node:fs';
@@ -9,7 +10,9 @@ if (!res.ok) throw new Error(`metadata request failed: ${res.status}`);
 const meta = JSON.parse((await res.text()).replace(/^\)\]\}'\n?/, ''));
 const out = {};
 for (const f of meta.familyMetadataList.sort((a, b) => a.family.localeCompare(b.family))) {
-  out[f.family] = Object.keys(f.fonts).filter(k => /^\d+$/.test(k)).map(k => k[0]).sort().join('');
+  const weights = Object.keys(f.fonts).filter(k => /^\d+$/.test(k));
+  const lh = f.fonts['400']?.lineHeight ?? f.fonts[weights[0]]?.lineHeight;
+  out[f.family] = weights.map(k => k[0]).sort().join('') + (lh ? '|' + lh : '');
 }
 fs.writeFileSync(new URL('../src/google-fonts.json', import.meta.url), JSON.stringify(out) + '\n');
 console.log(`${Object.keys(out).length} families`);

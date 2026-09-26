@@ -1,13 +1,13 @@
 // Writes the native nodes the export inspector extracted into a .pptx. Pure (no DOM) so it
 // runs in the editor shell and in node tests alike.
 import pptxgen from 'pptxgenjs';
-import { resolveFont, weightedFace } from './fonts.js';
+import { resolveFont, weightedFace, naturalLineHeight } from './fonts.js';
 
 const SHAPES={rectangle:'rect',rounded:'roundRect',ellipse:'ellipse',line:'line',arrow:'rightArrow',triangle:'triangle'};
 // Google Slides re-measures text with its own font metrics and ignores both letter spacing and
 // "do not wrap", so boxes get extra width: a little for wrapped text, more for single lines, plus
 // whatever negative tracking the browser applied (Slides sets that text wider).
-const WIDTH_SLACK=0.04,SINGLE_LINE_SLACK=0.12;
+const WIDTH_SLACK=0.04,SINGLE_LINE_SLACK=0.12,FIXED_LINES_SLACK=0.3;
 
 // Everything a person should know before sharing the file, from the extractor's warnings
 // and the fonts the writer will substitute.
@@ -45,18 +45,21 @@ export async function writePowerPoint({title,size,slides,lang='en-US'}) {
       if(node.type==='text'){
         let {x,w}=pos;
         const tracking=Math.max(0,...node.runs.map(r=>-(r.options?.charSpacing || 0)/(r.options?.fontSize || node.fontSize)));
-        const extra=Math.min(w*((node.singleLine?SINGLE_LINE_SLACK:WIDTH_SLACK)+tracking),Math.max(0,width-(x+w))+(node.align==='left'?0:x));
+        // When every line already ends in an explicit break (balanced headings), extra width can only prevent wraps.
+        const fixed=node.runs.some(r=>r.text==='\n' && !r.options?.paragraph);
+        const extra=Math.min(w*(fixed?FIXED_LINES_SLACK:(node.singleLine?SINGLE_LINE_SLACK:WIDTH_SLACK)+tracking),Math.max(0,width-(x+w))+(node.align==='left'?0:x));
         if(node.align==='center')x-=extra/2;else if(node.align==='right')x-=extra;w+=extra;
         // List items are separate paragraphs (each keeps its bullet); other breaks are soft line breaks.
         // Paragraph properties ride on every run: pptxgenjs starts each paragraph from its first run.
-        const para={align:['left','center','right','justify'].includes(node.align)?node.align:'left',lineSpacing:node.lineHeight*pt,bullet:node.bullet?{...node.bullet,indent:Math.max(1,node.margin[3]*pt)}:undefined,paraSpaceAfter:0,paraSpaceBefore:0};
+        const face=weightedFace(resolveFont(node.runs.find(r=>r.options?.fontStack)?.options.fontStack || '').face).face;
+        const para={align:['left','center','right','justify'].includes(node.align)?node.align:'left',lineSpacingMultiple:Math.round(node.lineHeight/node.fontSize/naturalLineHeight(face)*1000)/1000,bullet:node.bullet?{...node.bullet,indent:Math.max(1,node.margin[3]*pt)}:undefined,paraSpaceAfter:0,paraSpaceBefore:0};
         const runs=[];let soft=false;
         for(const r of node.runs){
           if(r.text==='\n'){if(r.options?.paragraph){if(runs.length)runs[runs.length-1].options.breakLine=true;}else soft=runs.length>0;continue;}
           runs.push({text:r.text,options:{...para,lang,...runOptions(r.options,node,pt),...(soft?{softBreakBefore:true}:{})}});soft=false;
         }
         if(!runs.length)continue;
-        slide.addText(runs,{...pos,x,w,fontSize:node.fontSize*pt,align:['left','center','right','justify'].includes(node.align)?node.align:'left',valign:node.valign || 'top',margin:[node.bullet?0:node.margin[3],node.margin[1],node.margin[2],node.margin[0]].map(n=>n*pt),lineSpacing:node.lineHeight*pt,fit:'none',wrap:!node.singleLine,transparency:Math.round((1-alpha)*100),bullet:node.bullet?{...node.bullet,indent:Math.max(1,node.margin[3]*pt)}:undefined,paraSpaceAfter:0,paraSpaceBefore:0});
+        slide.addText(runs,{...pos,x,w,fontSize:node.fontSize*pt,align:['left','center','right','justify'].includes(node.align)?node.align:'left',valign:node.valign || 'top',margin:[node.bullet?0:node.margin[3],node.margin[1],node.margin[2],node.margin[0]].map(n=>n*pt),fit:'none',wrap:!node.singleLine,transparency:Math.round((1-alpha)*100),bullet:node.bullet?{...node.bullet,indent:Math.max(1,node.margin[3]*pt)}:undefined,paraSpaceAfter:0,paraSpaceBefore:0});
       }
     }
   }
