@@ -1,5 +1,5 @@
 import { exportManifest, exportSummary, inspectExportSlide, writePowerPoint } from './export.js';
-import { createInspector } from './inspector.js';
+import { createInspector, setupTips } from './inspector.js';
 import { shapeHTML, layoutHTML } from './authoring.js';
 import { elementOperations, slideOperations, documentMeta, setDocumentMeta, pathTarget, reorderSections, copySlidesInto, ensureObjectIds, freshSlide, transferHead } from './editor-model.js';
 import { send, isNative } from './bridge.js';
@@ -200,10 +200,22 @@ stage.on('load', () => {
     stage.dek.edit.enable(true);state.sel=null;
     const sec=stage.win.document.querySelectorAll('.dek-slide')[state.index],paths=[];
     for(const id of state.restoreIds || []) { const el=sec?.querySelector(`[data-dek-id="${CSS.escape(id)}"]`);if(!el)continue;const path=[];let n=el;while(n!==sec){path.unshift([...n.parentElement.children].indexOf(n));n=n.parentElement;}paths.push(path); }
+    if(state.restorePaths){ paths.push(...state.restorePaths); state.restorePaths=null; }
     if(paths.length)state.sel=stage.dek.edit.selectMany(paths);
     state.restoreIds=null;renderEltools();
+    // A reload (delete, undo, lock…) must not strand the keyboard on the page: give it back to the slide.
+    // …unless it started from a panel control, which gets the keyboard back.
+    const kf=state.keepFocus; state.keepFocus=null;
+    if(kf && Date.now()-kf.at<3000 && kf.el.isConnected) kf.el.focus({ preventScroll: true });
+    else if(!inspector.refocus() && !$('inspector').contains(document.activeElement)) stage.focus();
   }
   if(state.pendingInsert) { const pending=state.pendingInsert;state.pendingInsert=null;insertHtml(pending.html,pending.options); }
+});
+// In Edit, a click on the empty backdrop around the slide clears the selection, as in Keynote.
+$('stage').addEventListener('mousedown', (e) => {
+  if (!state.editing || !stage.ok || e.button !== 0 || e.target.closest('#insertbar,iframe,button,input')) return;
+  const ed = stage.dek.edit; if (ed.selected()?.editingText) ed.commitText();
+  ed.clear(); state.sel = ed.selected(); renderEltools(); e.preventDefault(); stage.frame?.focus(); stage.win?.focus();
 });
 stage.on('edit', (ev) => onEditEvent(ev));
 stage.on('keydown', (e) => onKey(e));
@@ -313,9 +325,12 @@ function applyRaw(newRaw, o = {}) {
   newRaw=ensureObjectIds(newRaw);
   if (!deck || newRaw === deck.model.raw) return false;
   if (!o.skipHistory) {
-    if(!o.transaction || state.history.past.at(-1)?.transaction!==o.transaction) state.history.past.push({ raw: deck.model.raw, label: o.label || 'change', transaction:o.transaction });
+    if(!o.transaction || state.history.past.at(-1)?.transaction!==o.transaction) state.history.past.push({ raw: deck.model.raw, label: o.label || 'change', transaction:o.transaction, selIds:o.selIds || selectionIds(), index:state.index });
+    // A transaction that ends where it began (typing then cancelled) leaves no undo step.
+    // …and keeps redo, since nothing was changed after all.
+    let netZero=false; { const top=state.history.past.at(-1); if(o.transaction && top?.transaction===o.transaction && top.raw===newRaw) { state.history.past.pop(); netZero=true; } }
     if (state.history.past.length > 80) state.history.past.shift();
-    state.history.future = [];
+    if (!netZero) state.history.future = [];
   }
   const oldModel = deck.model;
   const oldSection=oldModel.slides[state.index] && new DOMParser().parseFromString(oldModel.slides[state.index].html,'text/html').querySelector('section');
@@ -345,22 +360,34 @@ function applyRaw(newRaw, o = {}) {
   return true;
 }
 
+// Stable ids of the current selection, so undo and redo can put it back.
+function selectionIds() {
+  if(!stage.ok || !state.editing) return [];
+  const sec=stage.win.document.querySelectorAll('.dek-slide')[state.index];
+  return (state.sel?.paths || []).map(p=>sec?.querySelector(pathTarget(p))?.dataset.dekId).filter(Boolean);
+}
 function undo() {
+  state.forcePanelUntil = Date.now() + 1500;
+  inspector.remember();
   if (stage.ok) stage.dek.edit.commitText();
   const h = state.history;
   const entry = h.past.pop();
   if (!entry || !state.deck) { toast('Nothing to undo'); return; }
-  h.future.push({ raw: state.deck.model.raw, label: entry.label });
-  applyRaw(entry.raw, { skipHistory: true });
+  h.future.push({ raw: state.deck.model.raw, label: entry.label, selIds:selectionIds(), index:state.index });
+  applyRaw(entry.raw, { skipHistory: true, focusIndex: entry.index !== undefined && parseDeck(entry.raw).slides.length > entry.index ? entry.index : undefined });
+  if(entry.selIds?.length && entry.index===state.index) state.restoreIds=entry.selIds;
   toast(`Undid ${entry.label}`);
 }
 function redo() {
+  state.forcePanelUntil = Date.now() + 1500;
+  inspector.remember();
   if (stage.ok) stage.dek.edit.commitText();
   const h = state.history;
   const entry = h.future.pop();
   if (!entry || !state.deck) { toast('Nothing to redo'); return; }
-  h.past.push({ raw: state.deck.model.raw, label: entry.label });
-  applyRaw(entry.raw, { skipHistory: true });
+  h.past.push({ raw: state.deck.model.raw, label: entry.label, selIds:selectionIds(), index:state.index });
+  applyRaw(entry.raw, { skipHistory: true, focusIndex: entry.index !== undefined && parseDeck(entry.raw).slides.length > entry.index ? entry.index : undefined });
+  if(entry.selIds?.length && entry.index===state.index) state.restoreIds=entry.selIds;
   toast(`Redid ${entry.label}`);
 }
 
@@ -378,6 +405,7 @@ function updateChrome() {
   const n = slideCount();
   els.deckname.textContent = m ? (m.meta.title || state.deck.name) : 'Dek';
   els.deckname.title = state.deck ? state.deck.path : '';
+  els.deckname.setAttribute('aria-label', `Deck actions · ${els.deckname.textContent}`);
   els.counter.textContent = n ? `${state.index + 1} / ${n}` : '– / –';
   els.navcount.textContent = n ? String(n) : '';
   els.empty.classList.toggle('show', (!state.deck || !n) && !state.settingsOpen && !designModeOpen() && !PRESENTER_MODE);
@@ -513,119 +541,233 @@ function setEditing(on) {
   on = !!on && !!state.deck && !state.presenting;
   if (on === state.editing) return;
   if (on) { setOverview(false); setSettingsOpen(false); setDesignOpen(false); setAgentOpen(false); }
+  const editAt = els.editbtn.getBoundingClientRect();
   state.editing = on;
   document.body.classList.toggle('editing', on);
   els.editbtn.classList.toggle('active', on);
   els.editbtn.textContent = on ? 'Done' : 'Edit';
+  els.editbtn.title = on ? 'Finish editing (⌘E)' : 'Edit slide elements (⌘E)';
   els.insertbar.hidden = !on;
   $('inspector').hidden = !on;
   renderEltools();
   layoutStage();
   if (stage.ok) stage.dek.edit.enable(on);
   if (!on) { state.sel = null; renderEltools(); }
-  else if (!store.get('dek.editHintShown', false)) { toast('Click to select · drag to move · double-click to edit text'); store.set('dek.editHintShown', true); }
+  else if (!store.get('dek.editHint2', false)) { toast('Click selects · double-click edits words · Esc steps out', 'F6 next area'); store.set('dek.editHint2', true); }
   if (on) stage.focus();
+  pinPill(on ? editAt : null);
+  if (!on && /leave Edit/.test(els.toast.textContent)) els.toast.hidden = true;
 }
+// Edit narrows the stage, which re-centres the pill: keep Edit/Done under the pointer so a
+// second click never lands on Present. Leaving Edit re-centres it, putting Edit back there too.
+function pinPill(from) {
+  const pill = $('pill'); pill.style.transform = '';
+  if (!from) return;
+  const now = els.editbtn.getBoundingClientRect(), box = pill.getBoundingClientRect(), host = pill.offsetParent?.getBoundingClientRect();
+  if (!host || !now.width) return;
+  let dx = (from.left + from.width / 2) - (now.left + now.width / 2);
+  dx = Math.max(host.left + 8 - box.left, Math.min(host.right - 8 - box.right, dx));
+  if (Math.abs(dx) > 0.5) pill.style.transform = `translateX(calc(-50% + ${Math.round(dx)}px))`;
+}
+window.addEventListener('resize', () => { if ($('pill').style.transform) $('pill').style.transform = ''; });
+// Export says whether its dialog is open, whichever path opens or closes the shared popover.
+new MutationObserver(() => { const p = $('workspacepopover'); $('exportbtn').setAttribute('aria-expanded', String(!p.hidden && p.classList.contains('export-popover'))); const sh = els.insertbar.querySelector('[data-insert="shape"]'); sh?.setAttribute('aria-expanded', String(!p.hidden && p._opener === sh)); els.deckname.setAttribute('aria-expanded', String(!p.hidden && p._opener === els.deckname)); }).observe($('workspacepopover'), { attributes: true, attributeFilter: ['hidden', 'class'] });
 
 const pathSelector = (path) => ':scope' + (path || []).map((i) => ` > :nth-child(${i + 1})`).join('');
 const EDIT_LABELS = { style: 'move/resize', text: 'text edit', delete: 'delete element', retag: 'change type', attrs: 'element change', insert: 'insert' };
 
 /** Apply an edit the runtime already performed on the live DOM to the model and the file. */
+// Undo names what changed: "font size", "fill", "position", not a generic "move/resize".
+const STYLE_NAMES={translate:'position',width:'width',height:'height','font-size':'font size','font-family':'font','font-weight':'weight','font-style':'italic',color:'text color',fill:'fill','background-color':'fill','border-color':'stroke color','border-width':'stroke width',stroke:'stroke color','stroke-width':'stroke width','border-radius':'corner radius',padding:'padding','box-shadow':'shadow',opacity:'opacity',rotate:'rotation','line-height':'line spacing','letter-spacing':'letter spacing','text-align':'alignment','text-transform':'text case','z-index':'order','object-fit':'image fit','object-position':'image focus'};
+function styleLabel(ops){const keys=[...new Set(ops.filter(o=>o.type==='style').flatMap(o=>Object.keys(o.style||{})).map(k=>STYLE_NAMES[k]).filter(Boolean))];return ops.every(o=>o.type==='style') && keys.length ? keys.slice(0,2).join(' and ') : '';}
 function onEditEvent(ev) {
   if(ev.type==='notice'){if(state.inRpc)throw new Error(ev.message);toast(ev.message);return;}
-  if (ev.type === 'select') { state.sel=ev.info; renderEltools(); return; }
+  if (ev.type === 'pointer') { const a = document.activeElement; if (a && a !== document.body && a !== stage.frame) { inspector.release(); a.blur?.(); stage.frame?.focus(); stage.win?.focus(); } return; }
+  // Finishing the words closes the key help too: Esc ends both, wherever the keyboard was.
+  if (ev.type === 'select') { if (state.sel?.editingText && !ev.info?.editingText) inspector.closeHelp(); state.sel=ev.info; renderEltools(); return; }
   const m=model(); if (!m?.slides[state.index]) return;
   try {
     const ops = ev.type === 'batch' ? ev.operations : [{ type: ev.type, target:ev.type==='insert'?':scope':ev.path, style:ev.style, attrs:ev.attrs, html:ev.html, tag:ev.tag }];
     const html=elementOperations(m.slides[state.index].html,ops);
-    applyRaw(replaceSlide(m,state.index,html),{label:ev.label || EDIT_LABELS[ev.type] || 'edit elements',noReload:ev.type!=='batch',transaction:ev.transaction});
+    let label=(ev.label && !/^(style|move) elements$/.test(ev.label) ? ev.label : styleLabel(ops)) || (ev.type==='text' && ev.info?.role ? `typing in ${(String(state.sel?.path)===String(ev.info.path) && state.sel.label) || ev.info.label || ev.info.role}` : '') || ev.label || EDIT_LABELS[ev.type] || 'edit';
+    // Undo names the object too ("Undid position · Card"), so a toast says which thing came back.
+    if(ev.info?.role && !label.includes(' · ')) label += ev.info.count>1 ? ` · ${ev.info.count} objects` : ` · ${ev.info.label || ev.info.role}`;
+    applyRaw(replaceSlide(m,state.index,html),{label,noReload:ev.type!=='batch' || !!ev.live,transaction:ev.transaction,selIds:ev.selIds});
     if(ev.info!==undefined)state.sel=ev.info;
     renderEltools();
   } catch(e) { if(state.inRpc)throw e;toast(e.message || 'Could not apply edit'); stage.load(m,stageOpts(state.index,state.step)); }
 }
 
+// After a delete the neighbour takes the selection (next sibling, else previous, else the box
+// around it), the same on the slide, the toolbar and the Objects tree, so ⌫ can be pressed again.
+function neighbourAfterDelete(sel){
+  if(!sel || sel.count>1 || !sel.path?.length) return null;
+  const p=sel.path, sec=stage.win.document.querySelectorAll('.dek-slide')[state.index]; let el=sec;
+  for(const i of p) el=el?.children[i]; if(!el) return null;
+  const real=n=>n && !n.matches('.dek-sel,.dek-hover,.dek-text-field,script,style,template,aside.notes,.notes,[hidden]');
+  let n=el.nextElementSibling; while(n && !real(n)) n=n.nextElementSibling; if(n) return p;
+  n=el.previousElementSibling; while(n && !real(n)) n=n.previousElementSibling; if(n) return [...p.slice(0,-1),[...el.parentElement.children].indexOf(n)];
+  return p.length>1 ? p.slice(0,-1) : null;
+}
+let lastCanvasDelete = 0;
+function deleteObjects(){
+  const ed=stage.dek.edit, sel=ed.selected(); if(!sel)return;
+  if(!sel.locked){ const next=neighbourAfterDelete(sel); if(next) state.restorePaths=[next]; }
+  const what=sel.count>1?`${sel.count} objects`:sel.label, n=ed.deleteSelected();
+  if(!n){ state.restorePaths=null; toast(sel.lockedBy?`Inside a locked ${sel.lockedBy.split(' · ')[0]}. Unlock it first.`:sel.count>1?'Locked. Unlock them to delete.':'Locked. Unlock it to delete.'); return; }
+  state.sel=ed.selected(); renderEltools(); toast(`Deleted ${n<sel.count?`${n} of ${sel.count} objects (the rest are locked)`:what}`,'⌘Z');
+}
+const COLOR_HELP='Use a color name or hex, like navy or #D9B65A. Empty uses the deck’s color.';
+function fieldError(field,msg){
+  if(!field || !document.contains(field)) { toast(msg); return; }
+  // Focus already left (Tab): put the last good value back and say so, like number fields.
+  if(document.activeElement!==field && field.matches('input:not([type="color"])')) { field.value=field.defaultValue; field.removeAttribute('aria-invalid'); inspector.flash(field,`${msg} Kept ${field.defaultValue || 'none'}.`,false); return; }
+  field.setAttribute('aria-invalid','true'); inspector.flash(field,msg);
+}
+// Back to the slide; words being edited get the caret back too, so the next key types.
+function toSlide(){ inspector.disarm(); stage.frame?.focus(); stage.win?.focus(); if(stage.ok && stage.dek.edit.selected()?.editingText) stage.dek.edit.resumeText(); }
+function inspectorFocus(){
+  const r=$('inspector'); if(r.hidden) return;
+  // The first control that can actually take focus: never one inside a locked (inert) group.
+  const ok=n=>!n.closest('[inert]') && n.offsetParent!==null;
+  if(state.sel?.locked){ const u=r.querySelector('[data-action="lock"]'); if(u && ok(u)){ u.focus(); return; } }
+  // F6 lands on the object's toolbar, a safe stop: a typed letter there never edits a value.
+  const q=sel=>[...r.querySelectorAll(`.ins-head ${sel} :is(button[tabindex="0"],button:not([tabindex])):not([disabled])`)].find(ok);
+  // With nothing selected: Editing keys, a safe stop (never the Hide toggle a stray Space would flip).
+  const bar=q('.toolrow') || [...r.querySelectorAll('.ins-title [data-action="help"]')].find(ok);
+  if(bar){ bar.focus(); return; }
+  const pick=[...r.querySelectorAll('.ins-props :is(input:not([type="color"]),select,textarea,button[tabindex="0"],button:not([tabindex])):not([disabled])')].find(ok) || [...r.querySelectorAll('.ins-head :is(button[tabindex="0"],button:not([tabindex])):not([disabled]), button:not([disabled]),input,select,textarea')].find(ok);
+  pick?.focus();
+}
 const inspector=createInspector($('inspector'),{
   capture:()=>stage.ok && stage.dek.edit.captureTextSelection(),
   select:(path,add)=>stage.ok && stage.dek.edit.select(path,add),
   action:inspectorAction,
   field:inspectorField,
+  shortcuts:()=>command('shortcuts'),
+  canvas:()=>toSlide(),
 });
 function renderEltools() {
+  document.body.classList.toggle('slide-unselected', !!state.editing && !state.sel);
   els.eltools.hidden=true;
   if(!state.editing || !stage.ok) return;
   const slide=model()?.slides[state.index];
   const sec=stage.win.document.querySelectorAll('.dek-slide')[state.index];
-  inspector.render({snapping:stage.dek.edit.snapping(),info:state.sel, title:model()?.meta.title, layers:stage.dek.edit.layers(), slide:slide ? {number:state.index+1, notes:slide.notes, transition:slide.transition, hidden:slide.skip, background:sec ? stage.win.getComputedStyle(sec).backgroundColor : ''} : null});
+  inspector.render({size:model()?.meta.size, snapping:stage.dek.edit.snapping(),info:state.sel, title:model()?.meta.title, layers:stage.dek.edit.layers(), slide:slide ? {number:state.index+1, notes:slide.notes, transition:slide.transition, hidden:slide.skip, background:sec ? stage.win.getComputedStyle(sec).backgroundColor : ''} : null}, Date.now() < (state.forcePanelUntil || 0)); // undo/redo always shows the values it brought back
 }
 function placeEltools() { renderEltools(); }
 function inspectorAction(action) {
   if(!stage.ok) return;
   const ed=stage.dek.edit;
-  if(['bold','italic','underline','strikeThrough','insertUnorderedList','insertOrderedList'].includes(action)) ed.format(action);
+  // From the panel, formatting applies to the whole box (or the words already selected) and leaves the keyboard here.
+  if(['bold','italic','underline','strikeThrough','insertUnorderedList','insertOrderedList'].includes(action)) { const was=!!state.sel?.editingText; ed.format(action); if(!was) ed.commitText(); }
   else if(action==='clear') ed.clear();
   else if(action==='replace') pickImage(true);
-  else if(action==='duplicate') { const html=ed.duplicate(); if(html)insertHtml(html); }
-  else if(action==='delete') ed.deleteSelected();
+  else if(action==='duplicate') {
+    inspector.remember(); // from an Objects row, keyboard focus follows the copy
+    if(state.sel?.locked){ toast('Locked. Unlock it to duplicate.'); return; }
+    const what=state.sel?.count>1?`${state.sel.count} objects`:state.sel?.label, ids=selectionIds(), ops=ed.duplicateOps();
+    if(ops.length){
+      // Deepest-last order keeps earlier paths valid while inserting.
+      ops.sort((a,b)=>{for(let i=0;i<Math.max(a.target.length,b.target.length);i++){const d=(b.target[i]??-1)-(a.target[i]??-1);if(d)return d;}return 0;});
+      onEditEvent({type:'batch',operations:ops,label:`duplicate · ${what}`,selIds:ids});
+      // Select the copies: each sits right after its original.
+      if(ops.length===1){ const p=[...ops[0].target]; p[p.length-1]++; const n=new DOMParser().parseFromString(model().slides[state.index].html,'text/html').querySelector('section')?.querySelector(pathTarget(p)); if(n?.dataset.dekId) state.restoreIds=[n.dataset.dekId]; }
+      toast(`Duplicated ${what}`,'⌘Z');
+    }
+  }
+  else if(action==='delete') deleteObjects();
   else if(action==='front' || action==='back') ed.arrange(action);
   else if(action==='centerX' || action==='centerY') ed.center(action==='centerX'?'x':'y');
   else if(action==='hideSlide') batchSlides(model().slides[state.index].skip?'show':'hide',[state.index]);
   else if(action==='group') ed.group();
   else if(action==='ungroup') ed.ungroup();
-  else if(action==='lock') ed.lock(!state.sel?.locked);
+  else if(action==='lock') { const on=!state.sel?.locked; ed.lock(on); toast(`${on?'Locked':'Unlocked'} ${state.sel?.count>1?`${state.sel.count} objects`:state.sel?.label||''}`.trim()); }
   else if(action.startsWith('align-')) ed.align(action.slice(6));
   else if(action.startsWith('distribute-')) ed.distribute(action.slice(11));
   else if(action==='snap') ed.snap(!ed.snapping());
+  else if(action==='parent') ed.selectParent();
+  else if(action==='boxify') ed.setStyle({padding:'0.35em 0.7em','background-color':'rgb(127 127 127 / 0.12)','border-radius':'12px'},'put in a box');
+  // While the words are being edited, Edit words takes the keyboard back to them, caret where it was.
+  else if(action==='enter') { if(ed.selected()?.editingText) { stage.frame?.focus(); stage.win?.focus(); ed.resumeText(); return; } ed.enter(); }
+  else if(action==='aspect') ed.setAttrs({'data-dek-aspect':state.sel?.aspect===false?'locked':'free'});
   state.sel=ed.selected(); renderEltools();
 }
 function inspectorField(key,value,field) {
   if(!stage.ok || !state.deck)return;
+  field?.removeAttribute?.('aria-invalid'); // a new value is judged afresh
+  // Forgiving input: bare hex gets its #, a bare domain gets https://, an address gets mailto:.
+  if(typeof value==='string' && ['color','fill','stroke','textHighlight','background-color','border-color','slideBackground'].includes(key) && /^([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(value.trim())) value='#'+value.trim();
+  if(typeof value==='string' && key==='link' && value.trim() && !/^[a-z][a-z0-9+.-]*:|^[#/]/i.test(value.trim())) value=/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim()) ? 'mailto:'+value.trim() : /^[^\s]+\.[^\s]+$/.test(value.trim()) ? 'https://'+value.trim() : value;
   const ed=stage.dek.edit;
   if(key==='title') { ed.commitText(); applyRaw(setTitle(model(),value),{label:'deck title'}); return; }
   if(['notes','slideBackground','transition'].includes(key)) {
     ed.commitText(); const m=model(); let html=m.slides[state.index]?.html; if(!html)return;
     if(key==='notes') html=setNotes(html,value?'<span>'+esc(value).replace(/\n/g,'<br>')+'</span>':'');
     if(key==='transition') html=setSlideAttrs(html,{'data-transition':value || null});
-    if(key==='slideBackground') { if(!CSS.supports('background',value)) { toast('Enter a color name or hex code, such as navy or #D9B65A'); return; } html=updateElement(html,{selector:':scope',style:{background:value}}).html; }
-    applyRaw(replaceSlide(m,state.index,html),{label:key==='notes'?'speaker notes':'slide settings'}); return;
+    if(key==='slideBackground') { if(value!=='' && !CSS.supports('background',value)) { fieldError(field,COLOR_HELP); return; } html=updateElement(html,{selector:':scope',style:{background:value || null}}).html; }
+    applyRaw(replaceSlide(m,state.index,html),{label:key==='notes'?'speaker notes':key==='transition'?'slide transition':'slide background'}); return;
   }
   if(key==='cropRatio') { const ratio=Number(value);if(ratio>0)ed.setStyle({height:(state.sel.width/ratio)+'px','object-fit':'cover'});return; }
   if(key==='alt') { ed.setAttrs({alt:value}); return; }
-  if(key==='link') { if(value && !/^(https?:|mailto:|#)/i.test(value)){toast('Use a web address (https://…), email link (mailto:…), or slide link (#slide-id)');return;} ed.link(value); return; }
+  if(key==='link') { if(value && !/^(https?:|mailto:|#)/i.test(value)){fieldError(field,'Use a web address (https://…), mailto:, or #slide-id');return;} const keep=document.activeElement, mine=keep && keep!==document.body && keep.ownerDocument===document; const key=mine && $('inspector').contains(keep) ? inspector.remember() : null; if(mine && !key) state.keepFocus={ el: keep, at: Date.now() }; ed.link(value); if(mine) { const back=()=>{ const a=document.activeElement, n=keep.isConnected ? keep : key && $('inspector').querySelector(key); if(n && (a===document.body || a===stage.frame)) n.focus({ preventScroll: true }); }; back(); setTimeout(back,0); setTimeout(back,250); setTimeout(back,600); } return; } // Tab after a link lands on the next field, not the slide
   if(key==='x' || key==='y') { ed.geometry(key,value); return; }
   if(key==='crop-x' || key==='crop-y') { const pos=(state.sel?.objectPosition || '50% 50%').split(' '); pos[key==='crop-x'?0:1]=value+'%'; ed.setStyle({'object-position':pos.join(' ')}); return; }
   if(key==='aspect') { ed.setAttrs({'data-dek-aspect':value}); return; }
-  const px=['font-size','letter-spacing','border-radius','border-width','width','height'];
+  if(key==='tag') { ed.commitText(); ed.retag(value); state.sel=ed.selected(); renderEltools(); return; }
+  if(key==='color' && state.sel?.svg) key='fill';
+  const px=['font-size','letter-spacing','border-radius','border-width','width','height','padding','stroke-width'];
   const cssKey=key==='textHighlight'?'background-color':key;
   const cssValue=px.includes(key)?value+'px':key==='rotate'?value+'deg':key==='opacity'?String(value/100):String(value);
-  if(!CSS.supports(cssKey,cssValue)) { toast(`${field?.getAttribute('aria-label') || 'Value'}: ${['color','textHighlight','background-color','border-color'].includes(key)?'use a color name, hex code, or transparent':'enter a valid value for this setting'}`); field?.setAttribute('aria-invalid','true'); return; }
+  if(key==='font-family' && /^system font$/i.test(String(value).trim())) value='system-ui';
+  if(key==='text-align' && ({start:'left',end:'right'}[state.sel?.textAlign] || state.sel?.textAlign)===value) return; // already so: no undo step for nothing
+  // An emptied field removes the property, so the deck's own CSS applies again.
+  if(value==='') { ed.setStyle({[cssKey]:''}); state.sel=ed.selected(); renderEltools(); return; }
+  if(!CSS.supports(cssKey,cssValue)) { fieldError(field,`${['color','fill','stroke','textHighlight','background-color','border-color'].includes(key)?COLOR_HELP:'Enter a valid value for this setting'}`); return; }
   const style={[cssKey]:cssValue};
   if(key==='border-width')style['border-style']='solid';
-  if(['width','height'].includes(key) && state.sel?.kind==='image' && state.sel.aspect!==false) { style[key==='width'?'height':'width']=(key==='width'?value*state.sel.height/state.sel.width:value*state.sel.width/state.sel.height)+'px'; }
-  if(['color','font-family','font-size','font-weight','textHighlight','letter-spacing','text-transform'].includes(key))ed.textStyle(style); else ed.setStyle(style);
+  if(['width','height'].includes(key) && state.sel?.kind==='image' && state.sel.aspect!==false) { style[key==='width'?'height':'width']=Math.round(key==='width'?value*state.sel.height/state.sel.width:value*state.sel.width/state.sel.height)+'px'; }
+  if(['color','font-family','font-size','font-weight','textHighlight','letter-spacing','text-transform'].includes(key))ed.textStyle(style, key==='textHighlight'?'highlight':undefined); else ed.setStyle(style);
   state.sel=ed.selected(); renderEltools();
 }
 
 let insertCount = 0;
-function insertHtml(html, { text } = {}) {
+function insertHtml(html, { text, label, selIds } = {}) {
   if (!state.deck) return;
   if (!state.editing) setEditing(true);
   if (!stage.ok || !model().slides.length) { state.pendingInsert={html,options:{text}};if(!model().slides.length)addSlideAfter(-1,layoutHTML('blank'));return; }
   html=new DOMParser().parseFromString(freshSlide('<section>'+html+'</section>',[]),'text/html').querySelector('section').innerHTML;
+  selIds = selIds || selectionIds(); // undo of the insert brings back what was selected before it
   const path = stage.dek.edit.insert(html);
   if (!path) return;
-  onEditEvent({ type: 'insert', path, html });
+  onEditEvent({ type: 'insert', path, html, label, selIds });
   state.sel = stage.dek.edit.selected();
   renderEltools();
   if (text) stage.dek.edit.startText({ selectAll: true });
 }
 function insertOffset() { insertCount = (insertCount + 1) % 8; return { x: 180 + insertCount * 36, y: 260 + insertCount * 36 }; }
+// New words go where the slide is empty, so typing never lands on top of what's already there.
+// Falls back to the stepped offset when the slide has no room.
+function freeSpot(widths, h) {
+  const size = model()?.meta.size || { w: 1920, h: 1080 }, doc = stage.ok && stage.win?.document;
+  const sec = doc && (doc.querySelector('section.present') || doc.querySelector('section'));
+  if (!sec) return null;
+  const sr = sec.getBoundingClientRect(), k = sr.width / size.w || 1, pad = 24;
+  const taken = [...sec.querySelectorAll('*')].filter(n => !n.closest('.dek-sel,.dek-hover') && (n.matches('img,svg,video,canvas,iframe') || [...n.childNodes].some(c => c.nodeType === 3 && c.textContent.trim())))
+    .map(n => n.getBoundingClientRect()).filter(r => r.width && r.height)
+    .map(r => ({ x: (r.left - sr.left) / k - pad, y: (r.top - sr.top) / k - pad, r: (r.right - sr.left) / k + pad, b: (r.bottom - sr.top) / k + pad }));
+  const m = Math.round(size.w * 0.0625);
+  for (const w of widths) for (let y = m; y + h <= size.h - m; y += 24) for (let x = m; x + w <= size.w - m; x += 24)
+    if (!taken.some(t => x < t.r && x + w > t.x && y < t.b && y + h > t.y)) return { x, y, w };
+  return null;
+}
 function insertText() {
-  const o = insertOffset();
-  insertHtml(`<p class="dek-text" style="position: absolute; left: ${o.x}px; top: ${o.y}px; width: 960px; margin: 0;">Text</p>`, { text: true });
+  const o = freeSpot([960, 640, 420], 72) || { ...insertOffset(), w: 960 };
+  insertHtml(`<div class="dek-text" style="position: absolute; left: ${o.x}px; top: ${o.y}px; width: ${o.w}px; margin: 0;">Text</div>`, { text: true, label: 'insert text' });
 }
 function insertHeading() {
-  const o = insertOffset();
-  insertHtml(`<h2 class="dek-text" style="position: absolute; left: ${o.x}px; top: ${o.y}px; width: 1400px; margin: 0;">Heading</h2>`, { text: true });
+  const o = freeSpot([1400, 960, 640], 120) || { ...insertOffset(), w: 1400 };
+  insertHtml(`<h2 class="dek-text" style="position: absolute; left: ${o.x}px; top: ${o.y}px; width: ${o.w}px; margin: 0;">Heading</h2>`, { text: true, label: 'insert heading' });
 }
 function insertImage() { pickImage(false); }
 function pickImage(replace = false) {
@@ -662,10 +804,19 @@ function imagePicked(info) {
   }
   const o = insertOffset();
   const natural = info.size && info.size.width ? Math.min(info.size.width, 960) : 800;
-  insertHtml(`<img src="${info.src.replace(/"/g, '&quot;')}" alt="" style="position: absolute; left: ${o.x}px; top: ${o.y}px; width: ${natural}px; height: auto;">`);
+  insertHtml(`<img src="${info.src.replace(/"/g, '&quot;')}" alt="" style="position: absolute; left: ${o.x}px; top: ${o.y}px; width: ${natural}px; height: auto;">`, { label: 'insert image' });
   toast('Image added', 'drag to move');
 }
 
+[...els.insertbar.querySelectorAll('button')].forEach((b, i) => b.tabIndex = i ? -1 : 0); // one tab stop, arrows inside
+setupTips(els.insertbar); // the same quick tooltips as the panel, with the shortcut
+els.insertbar.addEventListener('keydown', (e) => {
+  const list = [...els.insertbar.querySelectorAll('button')], i = list.indexOf(e.target);
+  if (i < 0 || !['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'].includes(e.key)) return;
+  e.preventDefault(); e.stopPropagation();
+  const n = list[e.key === 'Home' ? 0 : e.key === 'End' ? list.length - 1 : (i + (['ArrowLeft','ArrowUp'].includes(e.key) ? -1 : 1) + list.length) % list.length];
+  list.forEach(b => b.tabIndex = -1); n.tabIndex = 0; n.focus();
+});
 els.insertbar.addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-insert]');
   if (!btn) return;
@@ -792,7 +943,7 @@ function setNavOpen(open) {
   state.navOpen = open;
   store.set('dek.nav', open);
   document.body.classList.toggle('nav-open', open);
-  els.navtoggle.classList.toggle('active', open);
+  els.navtoggle.classList.toggle('active', open); els.navtoggle.setAttribute('aria-pressed', String(open));
   if (open) requestAnimationFrame(() => thumbs.scrollToCurrent());
 }
 
@@ -800,6 +951,7 @@ function setAgentOpen(open) {
   if(open && state.editing)setEditing(false);
   state.agentOpen = open;
   document.body.classList.toggle('agent-open', open);
+  document.querySelector('.agent-inner')?.toggleAttribute('inert', !open); // a closed panel takes no focus
   els.agentbtn.classList.toggle('active', open);
   if (open) { state.agent.unseen = 0; renderAgent(); }
 }
@@ -814,7 +966,14 @@ function setSettingsOpen(open) {
   if (!open) stage.focus();
 }
 
-function setShortcutsOpen(open) { els.shortcuts.hidden = !open; }
+// The shortcuts sheet takes the keyboard while open and gives it back to whatever opened it.
+function setShortcutsOpen(open) {
+  if (open === !els.shortcuts.hidden) return;
+  els.shortcuts.hidden = !open;
+  const card = els.shortcuts.querySelector('.shortcuts-card');
+  if (open) { els.shortcuts._opener = document.activeElement; card.tabIndex = -1; card.focus({ preventScroll: true }); }
+  else { const o = els.shortcuts._opener; els.shortcuts._opener = null; if (o?.isConnected && o !== document.body) o.focus({ preventScroll: true }); else if (state.editing) { stage.frame?.focus(); stage.win?.focus(); } }
+}
 els.shortcuts.addEventListener('click', (e) => { if (!e.target.closest('.shortcuts-card')) setShortcutsOpen(false); });
 
 // ---------- settings ----------
@@ -1084,6 +1243,7 @@ function setDesignOpen(open) {
   if (open) { setSettingsOpen(false); setOverview(false); setEditing(false); }
   themesUI.setOpen(open);
   updateChrome();
+  els.designbtn.setAttribute('aria-expanded', String(!!open));
   if (!open) stage.focus();
 }
 
@@ -1103,6 +1263,7 @@ function agentBadge() {
   const live = Date.now() - state.agent.lastSeen < 90000;
   els.agentbtn.classList.toggle('live', live);
   els.agentbtn.innerHTML = `<span class="dot"></span><span class="agentlabel">${esc(state.agent.lastAuthor && live ? state.agent.lastAuthor : 'Agent')}</span>${state.agent.unseen ? `<span class="n">${state.agent.unseen}</span>` : ''}`;
+  els.agentbtn.setAttribute('aria-label', `${live && state.agent.lastAuthor ? state.agent.lastAuthor : 'Agent'}${state.agent.unseen ? `, ${state.agent.unseen} new` : ''}`);
   els.agentbtn.title = live ? `${state.agent.lastAuthor} is connected (⌘J)` : 'Agent activity (⌘J)';
   els.agentconn.textContent = state.agent.lastAuthor ? `${state.agent.lastAuthor}${live ? ' connected' : ''}` : '';
   els.agentconn.classList.toggle('live', live);
@@ -1214,37 +1375,79 @@ const CMD_KEYS = (e) => {
   const table = {
     'k': 'palette', 'p': e.shiftKey ? 'palette' : 'goto', '\\': 'nav', 'j': 'agent', ',': 'settings', '/': 'shortcuts',
     'r': 'reload', 'd': 'duplicate', 'Backspace': 'delete', 'Enter': 'present', 'z': e.shiftKey ? 'redo' : 'undo',
-    's':'save', 'g':e.shiftKey?'ungroup':'group', 'o': e.shiftKey ? 'overview' : 'open', 'n': e.shiftKey ? 'newSlide' : 'newDeck', 'e': e.shiftKey?'export':'edit',
+    's':'save', 'l':'lock', 'g':e.shiftKey?'ungroup':'group', 'o': e.shiftKey ? 'overview' : 'open', 'n': e.shiftKey ? 'newSlide' : 'newDeck', 'e': e.shiftKey?'export':'edit',
   };
   return table[k] || null;
 };
 
 function onKey(e) {
   const t = e.target;
-  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+  // F6 moves keyboard focus between the slide and the inspector, as between panes in macOS apps.
+  // F6 / ⇧F6 cycle the window's areas as in macOS apps: slide, panel, insert bar, top bar, slide list.
+  if (e.key === 'F6' && state.editing) {
+    e.preventDefault();
+    const typing = stage.ok && stage.dek.edit.selected()?.editingText;
+    const areas = ['slide', 'inspector', 'insertbar', 'pill', ...(state.navOpen ? ['nav'] : [])];
+    const here = areas.slice(1).find(a => t?.closest?.('#' + a)) || 'slide';
+    const next = areas[(areas.indexOf(here) + (e.shiftKey ? -1 : 1) + areas.length) % areas.length];
+    if (here === 'inspector') inspector.closeHelp(); // the key help belongs to the panel; leaving it closes it
+    if (here === 'slide' && typing) stage.dek.edit.captureTextSelection();
+    if (next === 'slide') { stage.frame?.focus(); stage.win?.focus(); if (typing) stage.dek.edit.resumeText(); }
+    else if (next === 'inspector') inspectorFocus();
+    else { const r = $(next); (r.querySelector('[tabindex="0"]:not([disabled])') || r.querySelector('button:not([disabled]):not([tabindex="-1"]),input,[tabindex="0"]'))?.focus(); }
+    return;
+  }
+  if (e.key === 'Escape' && !$('workspacepopover').hidden) { e.preventDefault(); closePopoverToOpener(); return; } // from anywhere, even a field
+  if (e.key === 'Escape' && !els.shortcuts.hidden) { e.preventDefault(); e.stopPropagation(); setShortcutsOpen(false); return; }
+  // Tab from the opener of an open popover goes into it.
+  if (e.key === 'Tab' && !e.shiftKey && !$('workspacepopover').hidden && t === $('workspacepopover')._opener) { const first = [...$('workspacepopover').querySelectorAll('button,input,select,textarea,a[href]')].find(n => !n.disabled && n.offsetParent !== null && !(n.type === 'radio' && !n.checked)); if (first) { e.preventDefault(); first.focus(); return; } }
+  if (t && ((t.tagName === 'INPUT' && !(t.type === 'color' && (e.metaKey || e.ctrlKey))) || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return; // a color swatch has no text: ⌘Z there is the app's undo
+  // Keys pressed on inspector controls belong to those controls, never to the slide —
+  // including a control the panel just rebuilt away while handling that key.
+  if ((t?.closest?.('#inspector') || (t?.nodeType === 1 && !t.isConnected)) && (!(e.metaKey || e.ctrlKey) || e.key === 'Backspace' || e.key === 'Delete')) return;
   if (PRESENTER_MODE) return presenterKey(e);
   const mod = e.metaKey || e.ctrlKey;
   if (mod) {
-    if(e.key.toLowerCase()==='a'){e.preventDefault();if(state.editing && stage.ok && !e.target.closest?.('#nav,#overview')){stage.dek.edit.selectMany(stage.dek.edit.layers().map(l=>l.path));}else{state.selectedSlides=new Set(model()?.slides.map(s=>s.index)||[]);renderSlideManagement();}return;}
+    if(e.key.toLowerCase()==='a'){e.preventDefault();if(state.editing && stage.ok && !e.target.closest?.('#nav,#overview')){stage.dek.edit.selectMany(stage.dek.edit.layers().filter(l=>!l.depth).map(l=>l.path));}else{state.selectedSlides=new Set(model()?.slides.map(s=>s.index)||[]);renderSlideManagement();}return;}
+    if((e.key==='Backspace' || e.key==='Delete') && state.editing && !stage.dek?.edit.selected()?.editingText) { e.preventDefault(); if (e.repeat || Date.now() - lastCanvasDelete < 500) return; lastCanvasDelete = Date.now(); command('delete'); return; }
     if(['c','x','v'].includes(e.key.toLowerCase()) && !e.altKey) { if(e.key.toLowerCase()!=='v') { e.preventDefault(); copySelection(e.key.toLowerCase()==='x'); } return; }
     const cmd = CMD_KEYS(e);
     if (cmd) { e.preventDefault(); command(cmd); }
     return;
   }
+  if (e.key === 'Escape' && inspector.closeHelp()) { e.preventDefault(); return; }
+  // ? shows the shortcuts in Edit too, unless words are being typed.
+  if (e.key === '?' && state.editing && !(stage.ok && stage.dek.edit.selected()?.editingText)) { e.preventDefault(); setShortcutsOpen(els.shortcuts.hidden); return; }
   if (!els.ctxmenu.hidden) { if (e.key === 'Escape') closeContextMenu(); return; }
   if (!els.shortcuts.hidden && e.key !== 'Escape' && e.key !== '?') return;
+  // In Edit, a key pressed on a shell control (pill, navigator, insert bar) works that control, never the slide.
+  // Esc there hands the keyboard back to the slide without changing the selection.
+  if (state.editing && t?.ownerDocument === document && t !== document.body && t.closest?.('button,a,input,select,textarea,[role="toolbar"],#nav,.pill,#insertbar')) { if (e.key === 'Escape') { e.preventDefault(); if (!$('workspacepopover').hidden) closePopoverToOpener(); else toSlide(); }
+    // The slide list still pages with ↑/↓ in Edit; it moves between slides, never the selected object.
+    else if (t.closest('#nav') && !t.closest('input,select,textarea') && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && !e.altKey) { e.preventDefault(); const i = state.index + (e.key === 'ArrowDown' ? 1 : -1); if (i >= 0 && i < slideCount()) { goTo(i); const follow = (n = 0) => { const c = $('nav').querySelector('[aria-selected="true"]'); if (c && c !== document.activeElement) c.focus({ preventScroll: true }); else if (!c && n < 5) setTimeout(() => follow(n + 1), 30); }; setTimeout(follow, 0); setTimeout(follow, 120); } }
+    return; }
   if (state.editing && stage.ok) {
     const ed = stage.dek.edit;
     const sel = ed.selected();
+    if (sel?.editingText) { e.preventDefault(); if (e.key === 'Escape') { ed.commitText(); state.sel = ed.selected(); renderEltools(); } else ed.resumeText(); return; }
     if (sel && !sel.editingText) {
       const step = e.shiftKey ? 10 : 1;
       const nudges = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+      if (sel.locked && (nudges[e.key] || e.key === 'Enter')) { e.preventDefault(); toast('Locked. Unlock it to move or edit.'); return; }
       if (nudges[e.key]) { e.preventDefault(); ed.nudge(...nudges[e.key]); return; }
-      if (e.key === 'Backspace' || e.key === 'Delete') { e.preventDefault(); ed.deleteSelected(); toast('Element deleted', '⌘Z'); return; }
-      if (e.key === 'Enter') { e.preventDefault(); ed.startText(); return; }
-      if (e.key === 'Escape') { e.preventDefault(); ed.clear(); return; }
+      // A held or double-tapped ⌫ deletes once: the neighbour that takes the selection needs a fresh press.
+      if (e.key === 'Backspace' || e.key === 'Delete') { e.preventDefault(); if (e.repeat || Date.now() - lastCanvasDelete < 500) return; lastCanvasDelete = Date.now(); deleteObjects(); return; }
+      if (e.key === ' ') { e.preventDefault(); return; } // with an object selected, Space never turns the slide
+      if (/^[a-z]$/i.test(e.key) && !e.altKey) { e.preventDefault(); return; } // nor do stray letters change mode
+      if (e.key === 'Enter') { e.preventDefault(); ed.enter(); state.sel = ed.selected(); renderEltools(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); ed.selectParent(); state.sel = ed.selected(); state.escArmed = 0; renderEltools(); return; }
     }
-    if (e.key === 'Escape' && !sel) { e.preventDefault(); setEditing(false); return; }
+    if ((e.key === 'Backspace' || e.key === 'Delete') && !sel) { e.preventDefault(); command('delete'); return; }
+    if (/^[a-z]$/i.test(e.key) && !e.altKey) { e.preventDefault(); return; }
+    // Tab walks objects on the slide; with nothing selected it picks the first one.
+    if (e.key === 'Tab' && !sel?.editingText && e.target?.ownerDocument !== document) { e.preventDefault(); ed.cycle(e.shiftKey ? -1 : 1); state.sel = ed.selected(); renderEltools(); return; }
+    // At the slide level Esc leaves Edit only when pressed twice, and says so the first time.
+    if (e.key === 'Escape' && !sel) { e.preventDefault(); if (Date.now() - (state.escArmed || 0) < 2500) { state.escArmed = 0; setEditing(false); } else { state.escArmed = Date.now(); toast('Press Esc again to leave Edit'); } return; }
   }
   switch (e.key) {
     case 'ArrowRight': case 'ArrowDown': case 'PageDown': case 'n': case 'N':
@@ -1268,6 +1471,15 @@ function onKey(e) {
       if (/^\d$/.test(e.key) && state.deck) { e.preventDefault(); pushGoto(e.key); }
   }
 }
+// Tab past the window's last control wraps to the slide instead of leaving the keyboard on the page.
+window.addEventListener('keydown', (e) => {
+  if (e.key !== 'Tab' || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey || !state.editing || e.defaultPrevented) return;
+  const stops = [...document.querySelectorAll('button,input,select,textarea,a[href],iframe,[tabindex]')].filter(n => n.tabIndex >= 0 && !n.disabled && !n.closest('[inert],[hidden]') && n.getClientRects().length && getComputedStyle(n).visibility !== 'hidden');
+  if (stops.at(-1) !== e.target) return;
+  e.preventDefault(); stage.frame?.focus(); stage.win?.focus();
+}, true);
+// The window itself never scrolls (panels scroll inside); undo any nudge a focus() causes.
+window.addEventListener('scroll', () => { if (window.scrollX || window.scrollY) window.scrollTo(0, 0); });
 window.addEventListener('keydown', onKey);
 
 /** Named commands: menus (Swift), palette and keyboard all end up here. */
@@ -1284,12 +1496,18 @@ function command(name, arg) {
     case 'themesPanel': setDesignOpen(true); break;
     case 'shortcuts': setShortcutsOpen(els.shortcuts.hidden); break;
     case 'reload': send({ type: 'reload' }); break;
+    case 'lock': if (state.editing && state.sel) inspectorAction('lock'); break;
     case 'duplicate': if (state.editing && state.sel) inspectorAction('duplicate'); else if (state.deck) batchSlides('duplicate'); break;
-    case 'delete': if (state.deck) batchSlides('delete'); break;
+    // In Edit, Delete (⌘⌫ and the menu) acts on objects only; slides are deleted outside Edit or from the navigator.
+    // …and never from a shell control that has focus (pill, navigator, insert bar): the key belongs to that control.
+    case 'delete': if (state.editing && (stage.dek?.edit.selected()?.editingText || document.activeElement?.matches?.('input,textarea,select') || (document.activeElement?.closest?.('button,a,[role="toolbar"],#nav,.pill,#insertbar') && !document.activeElement.closest('#inspector .layer-list')))) break;
+      if (state.editing) { if (stage.ok && stage.dek.edit.selected()) deleteObjects(); else toast('Select an object to delete'); } else if (state.deck) batchSlides('delete'); break;
     case 'newSlide': if (state.deck) showInsertMenu('slide'); break;
     case 'moveUp': if (state.deck) moveSlideTo(state.index, state.index - 1); break;
     case 'moveDown': if (state.deck) moveSlideTo(state.index, state.index + 1); break;
-    case 'present': setPresenting(!state.presenting); break;
+    // ⌘↩ finishes word editing in Edit; pressed once more it must not start presenting and drop
+    // the selection. The Present button still presents.
+    case 'present': if (state.editing && !state.presenting) { toast('In Edit, ⌘↩ finishes text. Use Present to present.'); break; } setPresenting(!state.presenting); break;
     case 'presentStart': goTo(model()?.slides.findIndex(s=>!s.skip) ?? 0); setPresenting(true); break;
     case 'stop': setPresenting(false); break;
     case 'presenter': send({ type: 'presenter', open: true }); break;
@@ -1315,7 +1533,7 @@ function command(name, arg) {
     case 'insertText': insertText(); break;
     case 'insertHeading': insertHeading(); break;
     case 'insertImage': insertImage(); break;
-    case 'deleteElement': if (state.editing && stage.ok) stage.dek.edit.deleteSelected(); break;
+    case 'deleteElement': if (state.editing && stage.ok) deleteObjects(); break;
     case 'escape': escapeKey(); break;
     case 'closeOverlays': while (escapeKey()) { /* until nothing is open */ } break;
     default: console.warn('[dek] unknown command', name);
@@ -2134,7 +2352,7 @@ function batchSlides(action,indices=selectedSlides(),options={}) {
     if(action==='section'){const ids=indices.map(i=>model().slides[i].id);indices=parseDeck(raw).slides.filter(s=>ids.includes(s.id)).map(s=>s.index);}
     const focus=action==='duplicate'?Math.max(...indices)+1:action==='move'?options.to:Math.min(...indices);
     state.selectedSlides=new Set(action==='duplicate'||action==='move'?indices.map((_,n)=>focus+n):action==='delete'?[Math.min(focus,Math.max(0,parseDeck(raw).slides.length-1))]:indices);
-    applyRaw(raw,{label:`${action} ${indices.length} slide${indices.length===1?'':'s'}`,focusIndex:focus});
+    applyRaw(raw,{label:indices.length===1?`${action} slide ${indices[0]+1}`:`${action} ${indices.length} slides`,focusIndex:focus});
     toast(`${indices.length} slide${indices.length===1?'':'s'} ${ {hide:'hidden',show:'shown',delete:'deleted',duplicate:'duplicated',move:'moved',section:'organized'}[action] || 'updated'}`,'⌘Z');
   }catch(e){toast(e.message);}
 }
@@ -2167,12 +2385,38 @@ function changeSection(id,patch={}) {
   applyRaw(setDocumentMeta(m,meta),{label:patch.remove?'remove section':'section settings'});
   return id;
 }
+// Esc gives the keyboard back to the control that opened the popover (Shape, Export, the deck name…).
+// Tab out of the popover closes it, like a macOS popover losing key focus.
+document.addEventListener('focusin',e=>{ const p=$('workspacepopover'), to=e.target; if(!p.hidden && to && to!==document.body && !p.contains(to) && to!==p._opener) p.hidden=true; });
+window.addEventListener('blur',()=>{ const p=$('workspacepopover'); setTimeout(()=>{ if(!p.hidden && document.activeElement===els.frame) p.hidden=true; },0); }); // focus went into the slide
+// The slide wears a focus ring when it holds the keyboard with nothing selected.
+const markSlideFocus=()=>document.body.classList.toggle('slide-has-focus', document.activeElement===els.frame);
+document.addEventListener('focusin',markSlideFocus); document.addEventListener('focusout',()=>setTimeout(markSlideFocus,0)); window.addEventListener('blur',()=>setTimeout(markSlideFocus,0));
+// Tab stays inside an open popover (it wraps); Esc or a choice closes it and returns to its opener.
+$('workspacepopover').addEventListener('keydown',e=>{
+  if(e.key!=='Tab') return; const p=$('workspacepopover');
+  const items=[...p.querySelectorAll('button,input,select,textarea,a[href],[tabindex]:not([tabindex="-1"])')].filter(n=>!n.disabled && n.offsetParent!==null && !(n.type==='radio' && !n.checked));
+  if(!items.length) return; const i=items.indexOf(document.activeElement);
+  if(e.shiftKey && i<=0){ e.preventDefault(); items.at(-1).focus(); } else if(!e.shiftKey && i===items.length-1){ e.preventDefault(); items[0].focus(); }
+});
+// Choice grids in the popover (shapes, layouts) move with the arrow keys, like any macOS picker.
+$('workspacepopover').addEventListener('keydown',e=>{
+  const grid=e.target.closest?.('.layout-options'); if(!grid || !['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'].includes(e.key)) return;
+  const list=[...grid.querySelectorAll('button')], i=list.indexOf(e.target), cols=Math.max(1,Math.round(grid.clientWidth/(list[0]?.offsetWidth||1)));
+  const step={ArrowLeft:-1,ArrowRight:1,ArrowUp:-cols,ArrowDown:cols}[e.key];
+  const n=e.key==='Home'?0:e.key==='End'?list.length-1:Math.min(list.length-1,Math.max(0,i+step));
+  e.preventDefault(); e.stopPropagation(); list[n]?.focus();
+});
+function closePopoverToOpener(){ const el=$('workspacepopover'), o=el._opener; el.hidden=true; if(o && o.isConnected && !o.closest('[hidden],[inert]')) o.focus(); else if(state.editing){ stage.frame?.focus(); stage.win?.focus(); } }
 function popover(html,anchor=$('deckname'),variant='') {
-  const el=$('workspacepopover');el.className='workspace-popover'+(variant?' '+variant:'');el.innerHTML=html;el.hidden=false;
+  const el=$('workspacepopover'); el._opener=document.activeElement?.closest?.('button') || anchor;el.className='workspace-popover'+(variant?' '+variant:'');el.innerHTML=html;el.hidden=false;
+  el.setAttribute('aria-label',el.querySelector('h2')?.textContent.trim() || 'Deck actions'); // the dialog is named by its visible heading
   const r=anchor.getBoundingClientRect(),w=el.offsetWidth || 340;
   // The export popover hangs from the right end of the pill; the others from their anchor's left edge.
-  el.style.left=Math.max(8,Math.min(window.innerWidth-w-8,variant==='export-popover'?r.right-w:r.left))+'px';el.style.top=Math.min(window.innerHeight-260,r.bottom+8)+'px';
-  requestAnimationFrame(()=>el.querySelector('input,button,select')?.focus());
+  el.style.left=Math.max(8,Math.min(window.innerWidth-w-8,variant==='export-popover'?r.right-w:r.left))+'px';el.style.top=(r.top>window.innerHeight/2 ? Math.max(8,r.top-el.offsetHeight-8) : Math.min(window.innerHeight-260,r.bottom+8))+'px'; // opens above a bar near the bottom, never over its opener
+  // Focus goes in at once, and again after the opening click settles if something took it back.
+  const into=()=>{ if(!el.hidden && !el.contains(document.activeElement)) el.querySelector('input,button,select')?.focus(); };
+  into(); requestAnimationFrame(into); setTimeout(into,120);
 }
 function showInsertMenu(kind) {
   const choices=kind==='shape'?['rectangle','rounded','ellipse','line','arrow','triangle']:['blank','title','content','split','quote'];
@@ -2192,7 +2436,7 @@ let exportFormat='pptx';
 function showExportMenu() {
   const format=EXPORT_FORMATS.find(f=>f.id===exportFormat) || EXPORT_FORMATS[0];
   popover(`<h2>Export deck</h2>
-    <div class="export-formats" role="radiogroup" aria-label="Format">${EXPORT_FORMATS.map(f=>`<label class="export-format"><input type="radio" name="exportformat" value="${f.id}"${f===format?' checked':''}><span class="export-format-icon" aria-hidden="true">${f.icon}</span><span class="export-format-text"><b>${f.name}</b><small>${f.blurb}</small></span></label>`).join('')}</div>
+    <div class="export-formats" role="radiogroup" aria-label="Format">${EXPORT_FORMATS.map(f=>`<label class="export-format"><input type="radio" name="exportformat" value="${f.id}"${f===format?' checked':''}><span class="export-format-icon" aria-hidden="true">${f.icon}</span><span class="export-format-text"><b>${f.name}</b><span class="sr-only">, </span><small>${f.blurb}</small></span></label>`).join('')}</div>
     <label class="check"><input id="exporthidden" type="checkbox">Include hidden slides</label>
     <p class="field-hint" id="exporthint">${format.hint}</p>
     <button class="export-go" data-workspace="export">${EXPORT_ICON}<span id="exportgolabel">Export ${format.name}…</span></button>`,$('exportbtn'),'export-popover');
@@ -2266,7 +2510,7 @@ $('workspacepopover').addEventListener('change',e=>{
 $('workspacepopover').addEventListener('click',e=>{
   const b=e.target.closest('button');if(!b)return;
   const pop=$('workspacepopover');
-  if(b.dataset.addShape){pop.hidden=true;insertHtml(shapeHTML({shape:b.dataset.addShape}));}
+  if(b.dataset.addShape){pop.hidden=true;insertHtml(shapeHTML({shape:b.dataset.addShape}),{label:`insert ${b.dataset.addShape}`});const give=()=>{if(!state.editing)return;stage.frame?.focus();stage.win?.focus();};give();setTimeout(give,0);setTimeout(give,250);}
   else if(b.dataset.addSlide){pop.hidden=true;addSlideAfter(state.index,layoutHTML(b.dataset.addSlide));}
   else if(b.dataset.workspace){const action=b.dataset.workspace;if(action==='export'){send({type:'exportDeck',format:exportFormat,includeHidden:$('exporthidden').checked});pop.hidden=true;return;}pop.hidden=true;({new:()=>send({type:'newDeck'}),open:()=>send({type:'openDialog'}),duplicate:()=>send({type:'saveAs'}),rename:()=>{setEditing(true);stage.dek.edit.clear();requestAnimationFrame(()=>$('inspector').querySelector('[data-field="title"]')?.focus());},overview:()=>setOverview(true),presenter:()=>send({type:'presenter',open:true}),agent:()=>setAgentOpen(true)})[action]?.();}
   else if(b.dataset.batch){const a=b.dataset.batch;pop.hidden=true;if(a==='copy')copySelection();else if(a==='up'||a==='down'){const ids=selectedSlides();batchSlides('move',ids,{to:Math.max(0,Math.min(...ids)+(a==='up'?-1:1))});}else if(a==='section'){popover('<h2>Move to section</h2>'+documentMeta(model()).sections.map(g=>`<button data-move-section="${g.id}">${esc(g.name)}</button>`).join('')+'<button data-move-section="">No section</button>');}else if(a==='newsection'){popover('<h2>Create section</h2><label>Name<input id="sectionname" value="Untitled section"></label><button data-create-section="true">Create and add selected slides</button>');}else batchSlides(a);}
@@ -2308,6 +2552,7 @@ window.addEventListener('drop', (e) => {
 // ---------- boot ----------
 
 if (isNative) document.body.classList.add('native');
+document.querySelector('.agent-inner')?.toggleAttribute('inert', !state.agentOpen);
 applyTheme(settings.theme);
 applyThumb(settings.thumb);
 applyNotesSize(settings.notesSize);

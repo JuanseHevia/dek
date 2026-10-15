@@ -154,7 +154,7 @@ export class Thumbs {
       item.el.dataset.index = String(i);
       item.idx.textContent = String(i + 1);
       item.el.title = slide.title || `Slide ${i + 1}`;
-      item.el.setAttribute('aria-label', `Slide ${i + 1}${slide.title ? ': ' + slide.title : ''}${slide.skip ? ' (skipped)' : ''}`);
+      item.el.setAttribute('aria-label', `Slide ${i + 1}${slide.title ? ': ' + slide.title : ''}${slide.skip ? ' (hidden)' : ''}`);
       item.el.classList.toggle('skipped', !!slide.skip);
       const key = slide.hash + '|' + styleHash;
       if (force || item.key !== key) {

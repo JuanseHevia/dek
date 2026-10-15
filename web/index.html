@@ -47,17 +47,17 @@
 
     <main id="stagewrap" class="stagewrap">
       <header id="pill" class="pill" role="toolbar" aria-label="Deck">
-        <button id="navtoggle" class="pillbtn iconbtn" title="Slides (⌘\)" aria-label="Toggle slide navigator">
+        <button id="navtoggle" class="pillbtn iconbtn" aria-pressed="false" title="Slides (⌘\)" aria-label="Toggle slide navigator">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><rect x="1.5" y="2.5" width="11" height="9" rx="1.5"/><path d="M5.5 2.5v9"/></svg>
         </button>
-        <button id="deckname" class="deckname" title="Deck actions" aria-haspopup="menu">Dek</button>
+        <button id="deckname" class="deckname" title="Deck actions" aria-haspopup="dialog" aria-expanded="false" aria-controls="workspacepopover">Dek</button>
         <span id="savestate" class="savestate" data-state="idle" aria-live="polite"></span>
         <span class="pill-spacer"></span>
         <button id="counter" class="pillbtn counter" title="Go to slide (⌘P)">– / –</button>
-        <button id="designbtn" class="pillbtn designbtn" title="Design systems (⌥⌘D)" aria-haspopup="true"><span id="designswatch" class="theme-swatch mini" aria-hidden="true"></span><span id="designlabel" class="designlabel">Design</span></button>
+        <button id="designbtn" class="pillbtn designbtn" title="Design systems (⌥⌘D)" aria-haspopup="true" aria-expanded="false"><span id="designswatch" class="theme-swatch mini" aria-hidden="true"></span><span id="designlabel" class="designlabel">Design</span></button>
         <button id="agentbtn" class="pillbtn agentbtn" title="Agent activity (⌘J)"><span class="dot"></span><span class="agentlabel">Agent</span></button>
         <button id="editbtn" class="pillbtn" title="Edit slide elements (⌘E)">Edit</button>
-        <button id="exportbtn" class="pillbtn exportbtn" title="Export (⇧⌘E)" aria-haspopup="dialog">
+        <button id="exportbtn" class="pillbtn exportbtn" title="Export (⇧⌘E)" aria-haspopup="dialog" aria-expanded="false" aria-controls="workspacepopover">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 8.5V1.75M4.25 4.25 7 1.5l2.75 2.75"/><path d="M2.5 7.5v3.25c0 .69.56 1.25 1.25 1.25h6.5c.69 0 1.25-.56 1.25-1.25V7.5"/></svg>
           <span>Export</span>
         </button>
@@ -65,17 +65,18 @@
       </header>
 
       <div id="stage" class="stage">
+        <!-- Before the slide in the DOM so forward Tab reaches it; it is drawn over the slide's bottom edge. -->
+        <div id="insertbar" class="insertbar" role="toolbar" aria-label="Insert" hidden>
+          <button data-insert="heading" data-tip="Insert a heading&lt;kbd&gt;⌥⌘H&lt;/kbd&gt;"><svg class="ins-glyph" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 2.5v11M12.5 2.5v11M3.5 8h9" stroke-width="1.7"/></svg>Heading</button>
+          <button data-insert="text" data-tip="Insert a text box&lt;kbd&gt;⌥⌘T&lt;/kbd&gt;"><svg class="ins-glyph" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3.5h10M8 3.5v9.5M6 13h4"/></svg>Text</button>
+          <button data-insert="image" data-tip="Insert an image&lt;kbd&gt;⌥⌘I&lt;/kbd&gt;"><svg class="ins-glyph" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="1.5"/><circle cx="5.5" cy="6.5" r="1.2"/><path d="M14 11l-3.5-3.5L4 13"/></svg>Image</button>
+          <button data-insert="shape" data-tip="Insert a shape" aria-haspopup="dialog" aria-expanded="false" aria-controls="workspacepopover"><svg class="ins-glyph" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="8" height="8" rx="1.5"/><circle cx="10.5" cy="5.5" r="3.5"/></svg>Shape</button>
+          <span class="ins-hint">Click selects · double-click edits · Esc steps out</span>
+        </div>
         <iframe id="frame" class="frame" title="Slide" hidden></iframe>
         <div id="blackout" class="blackout" hidden></div>
         <div id="gotohud" class="gotohud" hidden aria-live="polite"></div>
         <div id="stagehint" class="stagehint" hidden></div>
-        <div id="insertbar" class="insertbar" role="toolbar" aria-label="Insert" hidden>
-          <button data-insert="heading" title="Insert a heading (⌥⌘H)"><span class="ins-glyph">H</span>Heading</button>
-          <button data-insert="text" title="Insert a text box (⌥⌘T)"><span class="ins-glyph">T</span>Text</button>
-          <button data-insert="image" title="Insert an image (⌥⌘I)"><span class="ins-glyph">▣</span>Image</button>
-          <button data-insert="shape" title="Insert shape">◯ Shape</button>
-          <span class="ins-hint">Click to select · drag to move · ⏎ or double-click to edit text · ⌫ deletes</span>
-        </div>
       </div>
       <div id="eltools" class="eltools" role="toolbar" aria-label="Element" hidden></div>
 
@@ -239,7 +240,7 @@
     </aside>
   </div>
 
-  <section id="workspacepopover" class="workspace-popover" hidden aria-label="Deck actions"></section>
+  <section id="workspacepopover" class="workspace-popover" hidden role="dialog" aria-label="Deck actions"></section>
   <div id="conflictbar" class="conflict-bar" hidden role="alert"><span>Your file changed on disk. Your edits are kept in this window.</span><button data-conflict="copy">Save my copy…</button><button data-conflict="reload">Load disk version</button></div>
   <div id="ctxmenu" class="ctxmenu" hidden role="menu"></div>
 
@@ -252,34 +253,46 @@
       <div class="shortcuts-cols">
         <dl>
           <dt>Navigate</dt>
-          <dd><kbd>→</kbd> <kbd>space</kbd> <kbd>n</kbd><span>next step / slide</span></dd>
-          <dd><kbd>←</kbd> <kbd>⇧space</kbd> <kbd>p</kbd><span>previous</span></dd>
+          <dd class="view"><kbd>→</kbd> <kbd>space</kbd> <kbd>n</kbd><span>next step / slide</span></dd>
+          <dd class="view"><kbd>←</kbd> <kbd>⇧space</kbd> <kbd>p</kbd><span>previous</span></dd>
+          <dd class="edit"><kbd>→</kbd> / <kbd>←</kbd><span>next / previous slide, nothing selected</span></dd>
           <dd><kbd>home</kbd> / <kbd>end</kbd><span>first / last slide</span></dd>
           <dd><kbd>12</kbd> <kbd>⏎</kbd><span>type a number to jump</span></dd>
           <dd><kbd>⌘P</kbd><span>go to slide by title</span></dd>
-          <dd><kbd>o</kbd><span>light table</span></dd>
-          <dt class="gap">Present</dt>
-          <dd><kbd>⌘⏎</kbd> <kbd>f</kbd><span>present from this slide</span></dd>
-          <dd><kbd>⌥⌘⏎</kbd><span>present from the start</span></dd>
-          <dd><kbd>⌥⌘P</kbd> <kbd>s</kbd><span>presenter view</span></dd>
-          <dd><kbd>b</kbd> / <kbd>w</kbd><span>black / white screen</span></dd>
-          <dd><kbd>esc</kbd><span>stop presenting</span></dd>
+          <dd class="view"><kbd>o</kbd><span>light table</span></dd>
+          <dt class="gap view">Present</dt>
+          <dd class="view"><kbd>⌘⏎</kbd> <kbd>f</kbd><span>present from this slide</span></dd>
+          <dd class="view"><kbd>⌥⌘⏎</kbd><span>present from the start</span></dd>
+          <dd class="view"><kbd>⌥⌘P</kbd> <kbd>s</kbd><span>presenter view</span></dd>
+          <dd class="view"><kbd>b</kbd> / <kbd>w</kbd><span>black / white screen</span></dd>
+          <dd class="view"><kbd>esc</kbd><span>stop presenting</span></dd>
+          <dt class="gap edit">Move around</dt>
+          <dd class="edit"><kbd>tab</kbd> / <kbd>⇧tab</kbd><span>next / previous object</span></dd>
+          <dd class="edit"><kbd>esc</kbd><span>select the box around it; twice on the slide leaves Edit</span></dd>
+          <dd class="edit"><kbd>F6</kbd> / <kbd>⇧F6</kbd><span>slide, panel, insert bar, top bar, slide list</span></dd>
+          <dd class="edit"><kbd>⌘A</kbd><span>select every object</span></dd>
         </dl>
         <dl>
           <dt>Deck</dt>
           <dd><kbd>⌘O</kbd> / <kbd>⌘N</kbd><span>open / new deck</span></dd>
           <dd><kbd>⌘R</kbd><span>reload from disk</span></dd>
           <dd><kbd>⇧⌘N</kbd><span>new slide after current</span></dd>
-          <dd><kbd>⌘D</kbd><span>duplicate slide</span></dd>
-          <dd><kbd>⌘⌫</kbd><span>delete slide</span></dd>
+          <dd class="view"><kbd>⌘D</kbd><span>duplicate slide</span></dd>
+          <dd class="view"><kbd>⌘⌫</kbd><span>delete slide</span></dd>
           <dd><kbd>⌥⌘↑</kbd> / <kbd>⌥⌘↓</kbd><span>move slide</span></dd>
           <dd><kbd>⌘Z</kbd> / <kbd>⇧⌘Z</kbd><span>undo / redo any change</span></dd>
           <dt class="gap">Edit</dt>
-          <dd><kbd>⌘E</kbd> <kbd>e</kbd><span>edit slide elements</span></dd>
+          <dd class="view"><kbd>⌘E</kbd> <kbd>e</kbd><span>edit slide elements</span></dd>
+          <dd class="edit"><kbd>⌘E</kbd><span>finish editing</span></dd>
           <dd><kbd>⌥⌘T</kbd> / <kbd>⌥⌘H</kbd><span>insert text / heading</span></dd>
           <dd><kbd>⌥⌘I</kbd><span>insert image</span></dd>
           <dd><kbd>←↑→↓</kbd><span>nudge selection (⇧ ×10)</span></dd>
-          <dd><kbd>⏎</kbd> / <kbd>⌫</kbd><span>edit text / delete element</span></dd>
+          <dd><kbd>⏎</kbd><span>edit the words</span></dd>
+          <dd class="edit"><kbd>esc</kbd> <kbd>⌘⏎</kbd><span>finish the words</span></dd>
+          <dd class="edit"><kbd>⌘B</kbd> / <kbd>⌘I</kbd><span>bold / italic</span></dd>
+          <dd><kbd>⌘D</kbd><span>duplicate the selection</span></dd>
+          <dd><kbd>⌫</kbd> <kbd>⌘⌫</kbd><span>delete the selection</span></dd>
+          <dd class="edit"><kbd>⌘L</kbd><span>lock / unlock the selection</span></dd>
           <dt class="gap">Panels</dt>
           <dd><kbd>⌘K</kbd> <kbd>⇧⌘P</kbd><span>command palette</span></dd>
           <dd><kbd>⌘\</kbd><span>slide navigator</span></dd>

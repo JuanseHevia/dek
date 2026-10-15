@@ -758,25 +758,106 @@
   // the shell writes the same change into the file. The live DOM stays as the
   // source of what the user sees; no reload happens.
 
-  const EDIT = { on: false, sel: null, box: null, hover: null, drag: null, resize: null, textEl: null, textBackup: '', textSaved: '', range: null, keepText: false, textTimer: null, multi: [], snap: true };
+  const EDIT = { on: false, scope: null, sel: null, box: null, hover: null, drag: null, resize: null, textEl: null, textBackup: '', textSaved: '', range: null, keepText: false, textTimer: null, multi: [], snap: true };
   const ATOMIC_SEL = '.dek-shape,.dek-instance,[data-dek-use],.dek-chart,.dek-cube,.dek-scene,figure,table,pre,video,canvas,iframe,svg,img,.dek-atomic';
   const TEXT_SEL = 'h1,h2,h3,h4,h5,h6,p,blockquote,ul,ol,li,.dek-text';
-  const TEXT_TAGS = /^(H[1-6]|P|BLOCKQUOTE|UL|OL|LI|DIV|SPAN|FIGCAPTION|SMALL|LABEL|DT|DD)$/;
 
   function currentSection() { return S.sections[S.index]; }
 
-  function unitFor(target) {
+  // Inline (phrasing) markup that can live inside an editable text run.
+  const INLINE_TAGS = /^(SPAN|EM|STRONG|B|I|U|S|A|SMALL|SUB|SUP|MARK|CODE|BR|ABBR|TIME|KBD|Q|CITE|DFN|VAR|SAMP|WBR|DEL|INS|BDI|BDO|tspan|a)$/;
+  // `boxes` admits inline-block badges: a run of words may carry them, but a
+  // row of chips with no loose words between them is separate objects.
+  function isInline(el, boxes) {
+    const leaf = !el.querySelector('img,video,canvas,iframe,svg,div,p,h1,h2,h3,h4,h5,h6,ul,ol,table,section,figure');
+    const d = getComputedStyle(el).display;
+    if (d === 'inline' || d === 'contents') return leaf || INLINE_TAGS.test(el.tagName);
+    // Flex and grid parents blockify their children, so a badge or dot beside
+    // loose words is judged by its content, not its computed display.
+    return !!boxes && leaf;
+  }
+  // Text is structural, not a tag list: any element whose children are only
+  // words and inline markup is a text run, so `<div>One <em>two</em></div>` edits.
+  function isTextual(el) {
+    if (!el || el.nodeType !== 1 || el.matches('script,style,template,aside.notes,.dek-sel,.dek-hover')) return false;
+    if (el.namespaceURI === SVG_NS) return el.tagName === 'tspan' ? !!el.textContent.trim() : el.tagName === 'text' && el.querySelectorAll('tspan').length <= 1 && !!el.textContent.trim();
+    if (el.matches('img,video,canvas,iframe,input,textarea,select,.dek-shape,.dek-chart')) return false;
+    if (el.matches('ul,ol')) return el.children.length > 0 && Array.from(el.children).every(li => li.tagName === 'LI') && !!el.textContent.trim();
+    const loose = Array.from(el.childNodes).some(n => n.nodeType === 3 && n.textContent.trim());
+    let words = loose;
+    for (const n of el.children) {
+      if (n.matches('br,wbr')) continue;
+      if (n.matches('img,svg,video,canvas,iframe') || !isInline(n, loose)) return false;
+      if (n.textContent.trim()) words = true;
+    }
+    return words || (el.matches(TEXT_SEL) && !el.children.length);
+  }
+  // The selectable unit under `target` inside `root` (the slide, or a block the
+  // user double-clicked into). Atomic objects win, then the text run, then the
+  // root's direct child.
+  function unitFor(target, root = currentSection()) {
     const sec = currentSection();
-    if (!sec || !target || target === sec || !sec.contains(target)) return null;
-    if (target.closest('.dek-sel, .dek-hover')) return null;
+    if (!sec || !root || !target || target === root || !root.contains(target)) return null;
+    if (target.closest('.dek-sel, .dek-hover, .dek-text-field')) return null;
     let n = target, atomic = null;
-    while (n && n !== sec) { if (n.matches(ATOMIC_SEL)) atomic = n; n = n.parentElement; }
+    while (n && n !== root) { if (n.matches(ATOMIC_SEL)) atomic = n; n = n.parentElement; }
+    // Words inside a figure, table or SVG are still words: a click picks them, Esc reaches the frame.
+    if (atomic && atomic.matches('figure,table,svg,.dek-group')) {
+      let w = target; while (w && w !== atomic && !isTextual(w)) w = w.parentElement;
+      if (w && w !== atomic && !w.closest('.dek-chart,.dek-instance,[data-dek-use]')) { while (w.parentElement !== atomic && isTextual(w.parentElement)) w = w.parentElement; if (w.tagName === 'LI') w = w.closest('ul,ol') || w; return w; }
+    }
     if (atomic) return atomic;
-    const t = target.closest(TEXT_SEL);
-    if (t && t !== sec && sec.contains(t)) return t.tagName === 'LI' ? (t.closest('ul,ol') || t) : t;
     n = target;
-    while (n.parentElement && n.parentElement !== sec) n = n.parentElement;
-    return n === sec || n.matches('.dek-sel,.dek-hover') ? null : n;
+    while (n && n !== root && !isTextual(n)) n = n.parentElement;
+    if (n && n !== root) {
+      while (n.parentElement && n.parentElement !== root && isTextual(n.parentElement)) n = n.parentElement;
+      if (n.tagName === 'LI') { const list = n.closest('ul,ol'); if (list && root.contains(list) && list !== root) return list; }
+      return n;
+    }
+    n = target;
+    while (n.parentElement && n.parentElement !== root) n = n.parentElement;
+    return n === root || n.matches('.dek-sel,.dek-hover') ? null : n;
+  }
+  // The block the user has entered with a double-click; clicks resolve inside it.
+  function scopeFor(target) {
+    const sec = currentSection();
+    return EDIT.scope && EDIT.scope !== sec && EDIT.scope.isConnected && EDIT.scope.contains(target) ? EDIT.scope : sec;
+  }
+  // Selections made by path (layers, agents) land on the exact element, lifted
+  // out of inline markup to the whole text run, and scope clicks to its level.
+  function normalizeUnit(el) {
+    const sec = currentSection();
+    if (!el || el === sec || !sec || !sec.contains(el)) return null;
+    if (el.closest('.dek-sel,.dek-hover,aside.notes')) return null;
+    while (el.parentElement && el.parentElement !== sec && isTextual(el.parentElement) && isInline(el)) el = el.parentElement;
+    if (el.tagName === 'LI') { const list = el.closest('ul,ol'); if (list && list !== sec && sec.contains(list)) el = list; }
+    return el;
+  }
+  // A plain wrapper (one child, no words or paint of its own) is not a level worth stopping at.
+  function isWrapper(n) {
+    const sec = currentSection();
+    return n && n !== sec && n.children.length === 1 && !Array.from(n.childNodes).some(c => c.nodeType === 3 && c.textContent.trim()) && roleOf(n) === 'Box';
+  }
+  function scopeTo(el) {
+    const sec = currentSection();
+    EDIT.scope = el && el.parentElement && el.parentElement !== sec && unitFor(el, sec) !== el ? el.parentElement : null;
+  }
+  // Click resolution: inside the entered block, clicking its own padding selects
+  // that block (one level out) rather than dropping the selection.
+  function pickUnit(target, commit) {
+    const root = scopeFor(target), sec = currentSection();
+    if (commit && root === sec) EDIT.scope = null;
+    const unit = unitFor(target, root);
+    if (unit || root === sec || target !== root) return unit;
+    if (commit) scopeTo(root);
+    return root;
+  }
+  function enterUnit(unit, target) {
+    if (!unit) return null;
+    const inner = unitFor(target, unit);
+    if (!inner || inner === unit) return null;
+    EDIT.scope = unit;
+    return inner;
   }
 
   function pathOf(el) {
@@ -801,11 +882,15 @@
     if (!el) return 'block';
     if(el.matches('.dek-group')) return 'group';
     if (el.matches('.dek-shape,[data-shape]')) return 'shape';
+    if (el.namespaceURI === SVG_NS && el.tagName !== 'svg') return isTextual(el) ? 'text' : /^(rect|circle|ellipse|path|polygon|polyline|line|image|use)$/.test(el.tagName) ? 'shape' : 'block';
     if (el.matches('.dek-instance,[data-dek-use]')) return 'component';
-    if (el.matches('img,video,canvas,svg,iframe') || (el.tagName === 'FIGURE' && el.querySelector('img,video'))) return 'image';
+    if (el.matches('img,video,canvas,svg,iframe')) return 'image';
+    if (el.tagName === 'FIGURE') return 'figure';
     if (el.matches('.dek-chart')) return 'chart';
     if (el.matches('.dek-cube,.dek-scene')) return '3d';
-    if (el.matches(TEXT_SEL) || (TEXT_TAGS.test(el.tagName) && !el.children.length)) return 'text';
+    if (isTextual(el) || (el.matches(TEXT_SEL) && !el.children.length)) return 'text';
+    if (el.matches('table')) return 'table';
+    if (el.matches('figure,pre')) return 'figure';
     return 'block';
   }
 
@@ -840,24 +925,77 @@
     box.style.width = r.w + 'px';
     box.style.height = r.h + 'px';
   }
-  function labelFor(el) {
-    if (el.dataset.shape) return el.dataset.shape;
-    if (el.dataset.dekUse) return el.dataset.dekUse;
-    if (el.classList.contains('dek-chart')) return 'chart';
-    if (el.classList.contains('dek-instance')) return 'component';
+  const clearPaint = c => !c || c === 'transparent' || /rgba\([^)]*,\s*0\)$/.test(c);
+  // What a person would call this object: its role, from structure and paint.
+  function roleOf(el) {
+    if (el.dataset.shape) return 'Shape';
+    if (el.matches('.dek-instance,[data-dek-use]')) return 'Component';
+    if (el.classList.contains('dek-chart')) return 'Chart';
+    if (el.matches('.dek-cube,.dek-scene')) return '3D object';
+    if (el.classList.contains('dek-group')) return 'Group';
     const t = el.tagName.toLowerCase();
-    if (t === 'p') return 'text';
-    return t;
+    if (el.namespaceURI === SVG_NS && t !== 'svg') return t === 'g' ? 'Group' : /^(text|tspan)$/.test(t) ? 'Text' : t === 'rect' ? 'Rectangle' : t === 'circle' || t === 'ellipse' ? 'Ellipse' : t === 'line' || t === 'polyline' ? 'Line' : 'Path';
+    const names = { img:'Image', svg:'Graphic', video:'Video', canvas:'Canvas', iframe:'Embed', table:'Table', tr:'Table row', figure:'Figure', pre:'Code', h1:'Title', h2:'Heading', h3:'Subheading', h4:'Subheading', h5:'Subheading', h6:'Subheading', ul:'List', ol:'List', li:'List item', blockquote:'Quote', figcaption:'Caption', td:'Cell', th:'Cell' };
+    if (t === 'img' && el.complete && !el.naturalWidth) return 'Missing image';
+    if (names[t]) return names[t];
+    const cs = getComputedStyle(el), painted = !clearPaint(cs.backgroundColor) || ['Top','Right','Bottom','Left'].every(k => parseFloat(cs['border'+k+'Width']) > 0) || (cs.boxShadow && cs.boxShadow !== 'none' && !el.matches('.dek-sel,.dek-hover,[data-dek-selected]')) || cs.backgroundImage !== 'none';
+    if (isTextual(el)) return painted && parseFloat(cs.borderTopLeftRadius) >= Math.min(el.offsetHeight, el.offsetWidth) / 2 - 1 ? 'Tag' : painted ? 'Text box' : 'Text';
+    if (painted) return 'Card';
+    const kids = Array.from(el.children).filter(n => !n.matches('script,style,template,aside.notes,.dek-sel,.dek-hover'));
+    if (kids.length > 1 && (cs.display.includes('grid') || (cs.display.includes('flex') && !cs.flexDirection.startsWith('column')))) return kids.every(k => isTextual(k)) ? 'Row' : 'Columns';
+    if (kids.length > 1 && cs.display.includes('flex')) return 'Stack';
+    return 'Box';
+  }
+  function wordsOf(el, n = 4) {
+    if (el.tagName === 'IMG') return el.getAttribute('alt') || decodeURIComponent((el.getAttribute('src') || '').split(/[?#]/)[0].split('/').pop()).slice(0, 40);
+    // Line breaks and items separate words even when the element isn't laid out (innerText would join them).
+    const plain = () => { const c = el.cloneNode(true), src = [...el.querySelectorAll('*')], dst = [...c.querySelectorAll('*')]; dst.forEach((b, i) => { if (b.tagName === 'BR') b.replaceWith(' '); else if (/^(LI|P|DIV|H[1-6]|DT|DD|TD|TH)$/.test(b.tagName) || (src[i] && getComputedStyle(src[i]).display !== 'inline')) b.append(' '); }); return c.textContent; }; // badges and blocks separate words
+    const w = (el.getAttribute('alt') || el.getAttribute('aria-label') || plain() || '').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+    return w.length ? w.slice(0, n).join(' ') + (w.length > n ? '…' : '') : '';
+  }
+  // The same name everywhere: canvas tag, breadcrumb, header and object tree.
+  function labelFor(el) {
+    const role = roleOf(el), w0 = wordsOf(el), words = role === 'Shape' && w0 ? w0[0].toUpperCase() + w0.slice(1) : w0; // "Shape · Rectangle"
+    if (/^(Columns|Row|Stack|Group|Table|List)$/.test(role)) { const n = Array.from(el.children).filter(k => !k.matches('script,style,template,aside.notes,.dek-sel,.dek-hover,tbody') || k.matches('tbody')).length; const rows = role === 'Table' ? el.querySelectorAll('tr').length : n; return `${role} · ${rows} ${role === 'Table' ? (rows === 1 ? 'row' : 'rows') : (rows === 1 ? 'item' : 'items')}`; }
+    return words && (!/^(Video|Canvas|Embed)$/.test(role)) && !(role === 'Image' && /^data:/.test(el.getAttribute('src') || '')) ? `${role} · ${words}` : role;
   }
   function refreshSel() {
     if (!EDIT.sel || !EDIT.box) return;
     if (!EDIT.sel.isConnected) { select(null); return; }
     ensureBoxes();
+    // Chrome drawn on the slide keeps its screen size whatever the stage zoom.
+    document.documentElement.style.setProperty('--dek-z', String(1 / (S.zoom || 1)));
     positionBox(EDIT.box, EDIT.sel);
-    EDIT.box.querySelector('.dek-sel-label').textContent = EDIT.multi.length>1 ? `${EDIT.multi.length} selected` : labelFor(EDIT.sel)+(EDIT.sel.hasAttribute('data-dek-locked')?' · locked':'');
+    EDIT.box.classList.toggle('tag-below', slideRect(EDIT.sel).y < 40 / (S.zoom || 1));
+    const editing = EDIT.textEl === EDIT.sel;
+    EDIT.box.classList.toggle('editing', editing);
+    // The tag names the object as it is picked, then fades so it never sits on slide words; editing keeps it.
+    const lab = EDIT.box.querySelector('.dek-sel-label'), labKey = (EDIT.sel.dataset.dekId || '') + editing + EDIT.multi.length;
+    if (lab.dataset.key !== labKey) { lab.dataset.key = labKey; lab.classList.remove('faded'); clearTimeout(EDIT.labTimer); EDIT.labTimer = setTimeout(() => lab.classList.add('faded'), editing ? 1600 : 2200); } // the dashed ring keeps saying "editing" once the tag fades off the words
+    EDIT.box.querySelector('.dek-sel-label').textContent = editing ? 'Editing text · Esc to finish' : EDIT.multi.length>1 ? `${EDIT.multi.length} selected` : labelFor(EDIT.sel)+(isLocked(EDIT.sel)?' · locked':'');
     for(const n of document.querySelectorAll('[data-dek-selected]'))n.removeAttribute('data-dek-selected');
     EDIT.multi.filter(n=>n!==EDIT.sel).forEach(n=>n.setAttribute('data-dek-selected',''));
+    for(const n of document.querySelectorAll('[data-dek-scope]'))n.removeAttribute('data-dek-scope');
+    if(EDIT.scope && EDIT.scope!==currentSection() && EDIT.scope.isConnected)EDIT.scope.setAttribute('data-dek-scope','');
     EDIT.box.style.display = 'block';
+  }
+  // The first family in a stack, if this Mac would render a fallback instead of it.
+  const fontCache = new Map();
+  function missingFont(stack) {
+    const first = String(stack || '').split(',')[0].trim().replace(/^["']|["']$/g, '');
+    if (!first || /^(system-ui|-apple-system|BlinkMacSystemFont|serif|sans-serif|monospace|cursive|fantasy|ui-\w+)$/i.test(first)) return '';
+    if (fontCache.has(first)) return fontCache.get(first);
+    let missing = '';
+    try {
+      if (document.fonts && Array.from(document.fonts).some(f => f.family.replace(/["']/g, '') === first && f.status === 'loaded')) missing = '';
+      else {
+        const c = document.createElement('canvas').getContext('2d'), probe = 'mmmmmmmmmmlli1WQ@#';
+        const w = fam => { c.font = `72px ${fam}`; return c.measureText(probe).width; };
+        missing = ['monospace', 'serif', 'sans-serif'].every(b => w(`"${first}", ${b}`) === w(b)) ? first : '';
+      }
+    } catch {}
+    fontCache.set(first, missing);
+    return missing;
   }
   function selInfo() {
     const el = EDIT.sel;
@@ -867,19 +1005,24 @@
     const anchor=EDIT.range?.startContainer;
     const tc=EDIT.textEl && anchor && EDIT.textEl.contains(anchor)?getComputedStyle(anchor.nodeType===1?anchor:anchor.parentElement):cs;
     return {
-      id:el.dataset.dekId || null, paths:EDIT.multi.filter(n=>n.isConnected).map(pathOf), count:EDIT.multi.length, locked:el.hasAttribute('data-dek-locked'), aspect:el.dataset.dekAspect!=='free', objectPosition:cs.objectPosition, link:el.querySelector('a')?.getAttribute('href') || '', path: pathOf(el), tag: el.tagName.toLowerCase(), kind: kindOf(el), label: labelFor(el),
+      id:el.dataset.dekId || null, paths:EDIT.multi.filter(n=>n.isConnected).map(pathOf), count:EDIT.multi.length, locked:isLocked(el), lockedBy:(()=>{const a=el.closest('[data-dek-locked]');return a && a!==el ? labelFor(a) : null;})(), aspect:el.dataset.dekAspect!=='free', objectPosition:cs.objectPosition, link:el.querySelector('a')?.getAttribute('href') || '', path: pathOf(el), tag: el.tagName.toLowerCase(), kind: kindOf(el), label: labelFor(el), role: roleOf(el),
       rect: { x: r.left, y: r.top, w: r.width, h: r.height },
       textAlign: cs.textAlign, fontSizeRem: Math.round((parseFloat(cs.fontSize) / 32) * 100) / 100,
       translate: el.style.translate || '', editingText: EDIT.textEl === el,
-      src: el.tagName === 'IMG' ? el.getAttribute('src') : undefined,
-      geometry: slideRect(el), width: parseFloat(cs.width) || el.offsetWidth, height: parseFloat(cs.height) || el.offsetHeight,
-      fontFamily: tc.fontFamily, fontSize: parseFloat(tc.fontSize), fontWeight: tc.fontWeight,
-      fontStyle: tc.fontStyle, color: tc.color, backgroundColor: tc.backgroundColor,
+      src: el.tagName === 'IMG' ? el.getAttribute('src') : el.tagName === 'FIGURE' ? el.querySelector('img')?.getAttribute('src') : undefined, broken: (() => { const im = el.tagName === 'IMG' ? el : el.tagName === 'FIGURE' ? el.querySelector('img') : null; return !!im && im.complete && !im.naturalWidth; })(),
+      geometry: slideRect(el), width: parseFloat(cs.width) || el.offsetWidth || slideRect(el).w, height: parseFloat(cs.height) || el.offsetHeight || slideRect(el).h, fitSet: !!el.style.objectFit,
+      fontFamily: tc.fontFamily, fontSize: parseFloat(tc.fontSize), fontWeight: tc.fontWeight, allBold: EDIT.textEl === el && document.queryCommandState ? document.queryCommandState('bold') : el.style.fontWeight ? (+el.style.fontWeight >= 700 || el.style.fontWeight === 'bold') : runsAll(el, cs => +cs.fontWeight >= 700), allItalic: EDIT.textEl === el && document.queryCommandState ? document.queryCommandState('italic') : el.style.fontStyle ? el.style.fontStyle === 'italic' : runsAll(el, cs => cs.fontStyle === 'italic'), // while typing: the words at the caret
+      fontStyle: tc.fontStyle, color: el.namespaceURI === SVG_NS ? cs.fill : tc.color, backgroundColor: tc.backgroundColor,
       textDecoration: cs.textDecorationLine, textTransform: cs.textTransform,
       lineHeight: cs.lineHeight === 'normal' ? 1.2 : parseFloat(cs.lineHeight) / parseFloat(cs.fontSize),
-      letterSpacing: parseFloat(cs.letterSpacing) || 0, opacity: parseFloat(cs.opacity),
+      letterSpacing: parseFloat(cs.letterSpacing) || 0, opacity: EDIT.field && EDIT.textEl === el ? (parseFloat(EDIT.svgOpacity) || 1) : parseFloat(cs.opacity),
       borderColor: cs.borderTopColor, borderWidth: parseFloat(cs.borderTopWidth), borderRadius: parseFloat(cs.borderTopLeftRadius),
       rotate: parseFloat(cs.rotate) || 0, alt: el.getAttribute('alt') || '', objectFit: cs.objectFit,
+      padding: parseFloat(cs.paddingTop) || 0, boxShadow: cs.boxShadow, fontMissing: missingFont(tc.fontFamily),
+      svg: el.namespaceURI === SVG_NS, fill: el.namespaceURI === SVG_NS ? cs.fill : undefined, stroke: el.namespaceURI === SVG_NS ? cs.stroke : undefined, strokeWidth: el.namespaceURI === SVG_NS ? parseFloat(cs.strokeWidth) || 0 : undefined,
+      scoped: !!(EDIT.scope && EDIT.scope !== currentSection()), canEnter: !!el.firstElementChild && kindOf(el) !== 'text' && !el.matches('img,video,canvas,iframe,.dek-chart'),
+      parentLabel: el.parentElement && el.parentElement !== currentSection() ? labelFor(el.parentElement) : '',
+      trail: (() => { const out = [], sec = currentSection(); let n = el.parentElement; while (n && n !== sec) { if (!isWrapper(n)) out.unshift({ path: pathOf(n), label: labelFor(n), role: roleOf(n) }); n = n.parentElement; } return out; })(),
     };
   }
   function select(el, additive=false) {
@@ -890,7 +1033,7 @@
     el=EDIT.sel;
     ensureBoxes();
     if (EDIT.hover) EDIT.hover.style.display = 'none';
-    if (!el) { for(const n of document.querySelectorAll('[data-dek-selected]'))n.removeAttribute('data-dek-selected'); if (EDIT.box) EDIT.box.style.display = 'none'; emit('edit', { type: 'select', info: null }); return; }
+    if (!el) { for(const n of document.querySelectorAll('[data-dek-selected],[data-dek-scope]')){n.removeAttribute('data-dek-selected');n.removeAttribute('data-dek-scope');} if (EDIT.box) EDIT.box.style.display = 'none'; emit('edit', { type: 'select', info: null }); return; }
     refreshSel();
     emit('edit', { type: 'select', info: selInfo() });
   }
@@ -908,12 +1051,14 @@
     if (!EDIT.on || e.button !== 0) return;
     if (e.target.closest('.dek-sel-handle')) return;
     if (EDIT.textEl && EDIT.textEl.contains(e.target)) return;
-    const unit = unitFor(e.target);
-    if (!unit) { if (EDIT.textEl) commitText(); select(null); return; }
+    if (e.target.closest('.dek-text-field')) return;
+    emit('edit', { type: 'pointer' }); // the host hands keyboard focus to the slide
+    const unit = pickUnit(e.target, true);
+    if (!unit) { if (EDIT.textEl) commitText(); EDIT.scope = null; select(null); return; }
     e.preventDefault();
     if(e.shiftKey || e.metaKey) { select(unit,true); return; }
     if(!EDIT.multi.includes(unit))select(unit);
-    if(EDIT.multi.some(n=>n.hasAttribute('data-dek-locked')))return;
+    if(EDIT.multi.some(n=>isLocked(n)))return;
     const [tx, ty] = parseTranslate(unit);
     EDIT.drag = { el: unit, x0: e.clientX, y0: e.clientY, tx, ty, moved: false, elements:EDIT.multi.map(el=>({el,xy:parseTranslate(el)})) };
 
@@ -930,7 +1075,7 @@
       return;
     }
     if (EDIT.textEl || EDIT.resize) return;
-    const unit = unitFor(e.target);
+    const unit = pickUnit(e.target);
     if (unit && unit !== EDIT.sel) { ensureBoxes(); positionBox(EDIT.hover, unit); EDIT.hover.style.display = 'block'; }
     else if (EDIT.hover) EDIT.hover.style.display = 'none';
   }
@@ -942,15 +1087,21 @@
   }
   function onEditDblClick(e) {
     if (!EDIT.on) return;
-    const unit = unitFor(e.target);
+    const unit = pickUnit(e.target, true);
     if (!unit) return;
-    if (kindOf(unit) === 'text') { select(unit); startText(e); }
+    if (kindOf(unit) === 'text') { select(unit); startText(e); return; }
+    // Double-click a block, figure, table, component or SVG to work inside it;
+    // a double-click that lands on words starts editing them straight away.
+    const inner = enterUnit(unit, e.target);
+    if (!inner) return;
+    select(inner);
+    if (kindOf(inner) === 'text') startText(e);
   }
   function onEditMouseLeave() { if (EDIT.hover) EDIT.hover.style.display = 'none'; }
 
   function startResize(e) {
     const el = EDIT.sel;
-    if (!el || el.hasAttribute('data-dek-locked')) return;
+    if (!el || isLocked(el)) return;
     if(EDIT.textEl)commitText();
     e.preventDefault();
     e.stopPropagation();
@@ -970,20 +1121,26 @@
       document.removeEventListener('mousemove', move, true);
       document.removeEventListener('mouseup', up, true);
       const updates=EDIT.resize.updates || [];EDIT.resize = null;
-      emitStyles([{el,style:{width:el.style.width,height:el.style.height || null}},...updates],'resize group');
+      emitStyles([{el,style:{width:el.style.width,height:el.style.height || null}},...updates],'size');
     };
     document.addEventListener('mousemove', move, true);
     document.addEventListener('mouseup', up, true);
   }
 
   function startText(e, opts) {
-    const el = EDIT.sel;
-    if(el?.hasAttribute('data-dek-locked'))return;
+    const picked = EDIT.sel;
+    // Words that are a list item's whole content edit as part of their list, so ↩ makes a new item.
+    let el = picked;
+    const li = picked?.closest?.('li');
+    if (li && picked.namespaceURI !== SVG_NS && (li === picked || li.textContent.trim() === picked.textContent.trim())) { const list = li.closest('ul,ol'); if (list && currentSection()?.contains(list) && !isLocked(list)) el = list; }
+    if(picked?.closest?.('[data-dek-locked]')){ const a=picked.closest('[data-dek-locked]'); emit('edit',{type:'notice',message:a===picked?'Locked. Unlock it to move or edit.':`Inside a locked ${roleOf(a)}. Unlock it to edit.`}); return; }
     if (!el || EDIT.textEl === el) return;
     if (EDIT.textEl) commitText();
+    if (el.namespaceURI === SVG_NS) { startSvgText(el); return; }
     EDIT.textEl = el;
     EDIT.textBackup = el.innerHTML;
-    EDIT.textSaved = cleanHtml(el.innerHTML);
+    EDIT.keepSpans = new Set([...el.querySelectorAll('span')].map(n => n.dataset.dekId).filter(Boolean));
+    EDIT.textSaved = cleanHtml(el.innerHTML, el);
     EDIT.textTransaction = 'typing-'+crypto.randomUUID();
     EDIT.keepText = false; EDIT.range = null;
     el.setAttribute('contenteditable', 'true');
@@ -992,30 +1149,76 @@
     el.focus();
     const sel = getSelection();
     sel.removeAllRanges();
-    if (opts && opts.selectAll) {
-      const range = document.createRange(); range.selectNodeContents(el); sel.addRange(range);
+    if (opts && opts.after) {
+      // A zero-width anchor after the list keeps the caret out of its last item (removed when saved).
+      const anchor = document.createTextNode('\u200b'); opts.after.after(anchor);
+      const range = document.createRange(); range.setStart(anchor, 1); range.collapse(true); sel.addRange(range);
+    } else if (opts && opts.selectAll) {
+      const range = document.createRange(); range.selectNodeContents(picked); sel.addRange(range);
     } else if (e && document.caretRangeFromPoint && document.caretRangeFromPoint(e.clientX, e.clientY)) {
+      // Like any Mac text view, a double-click selects the word under the pointer.
       sel.addRange(document.caretRangeFromPoint(e.clientX, e.clientY));
+      if (e.type === 'dblclick' && sel.modify) { try { sel.modify('move', 'backward', 'word'); sel.modify('extend', 'forward', 'word'); const t = sel.toString(); if (/\s$/.test(t)) sel.modify('extend', 'backward', 'character'); if (!EDIT.textEl.contains(sel.anchorNode) || !t.trim()) { sel.removeAllRanges(); sel.addRange(document.caretRangeFromPoint(e.clientX, e.clientY)); } } catch {} }
     } else {
-      const range = document.createRange(); range.selectNodeContents(el); range.collapse(false); sel.addRange(range);
+      const range = document.createRange(); range.selectNodeContents(picked); range.collapse(false); sel.addRange(range);
     }
     el.addEventListener('input', onTextInput);
+    EDIT.caretState = null; document.addEventListener('selectionchange', onCaretMove);
     el.addEventListener('paste', onTextPaste);
     el.addEventListener('keydown', onTextKey);
     el.addEventListener('blur', onTextBlur);
+    refreshSel();
+    emit('edit', { type: 'select', info: selInfo() });
+  }
+  // SVG text cannot be contenteditable; a field over the words edits them live.
+  function startSvgText(el) {
+    EDIT.textEl = el;
+    EDIT.textBackup = el.innerHTML;
+    EDIT.keepSpans = new Set([...el.querySelectorAll('span')].map(n => n.dataset.dekId).filter(Boolean));
+    EDIT.textSaved = cleanHtml(el.innerHTML, el);
+    EDIT.textTransaction = 'typing-'+crypto.randomUUID();
+    const r = slideRect(el), cs = getComputedStyle(el), f = document.createElement('input');
+    f.className = 'dek-text-field'; f.value = el.textContent; f.setAttribute('aria-label', 'Edit text'); f.spellcheck = false;
+    Object.assign(f.style, { left: r.x - 6 + 'px', top: r.y - 4 + 'px', width: Math.max(r.w + 24, 160) + 'px', height: r.h + 8 + 'px', fontSize: Math.max(12, r.h * 0.78) + 'px', fontFamily: cs.fontFamily, fontWeight: cs.fontWeight, color: cs.fill && cs.fill !== 'none' ? cs.fill : 'inherit' });
+    currentSection().appendChild(f); EDIT.field = f;
+    EDIT.svgOpacity = el.style.opacity; el.style.opacity = '0'; // the field shows the words while typing
+    f.addEventListener('input', () => { el.textContent = f.value; onTextInput(); });
+    f.addEventListener('keydown', ev => { if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); ev.stopPropagation(); commitText(); return; } if (ev.key === 'F6' || ev.metaKey || ev.ctrlKey) return; ev.stopPropagation(); if (ev.key === 'Tab') { ev.preventDefault(); return; } if (ev.key === 'Escape' || ev.key === 'Enter') { ev.preventDefault(); commitText(); } });
+    f.addEventListener('blur', onTextBlur);
+    f.focus(); f.select();
+    refreshSel();
     emit('edit', { type: 'select', info: selInfo() });
   }
   function onTextKey(e) {
+    if (e.key === 'F6') return; // F6 moves to the panel; the shell handles it, text stays in edit
     e.stopPropagation();
     const mod = e.metaKey || e.ctrlKey;
     const k = e.key.toLowerCase();
-    if (e.key === 'Escape') { e.preventDefault(); cancelText(); return; }
-    if (e.key === 'Enter' && mod) { e.preventDefault(); commitText(); return; }
-    if (mod && k === 'b') { e.preventDefault(); document.execCommand('bold'); }
-    if (mod && k === 'i') { e.preventDefault(); document.execCommand('italic'); }
+    // Esc and ⌘↩ both finish editing and keep the words, as in Keynote and Figma; ⌘Z reverts.
+    if (e.key === 'Escape' || (e.key === 'Enter' && mod)) { e.preventDefault(); commitText(); return; }
+    if (e.key === 'Tab') { e.preventDefault(); return; } // the keyboard stays in the words being edited
+    // ↩ starts a new line inside the same object (a list gets a new item); it never splits the
+    // object into browser-made <div>s.
+    if (e.key === 'Enter' && !mod && !e.altKey) { const sl0 = window.getSelection(), a0 = sl0?.anchorNode; // a caret on the list itself sits beside one of its items
+      const n = a0?.nodeType === 1 && /^(UL|OL)$/.test(a0.tagName) ? (a0.childNodes[Math.max(0, sl0.anchorOffset - 1)] || a0) : a0; const inList = (n?.nodeType === 1 ? n : n?.parentElement)?.closest?.('li');
+      if (inList && a0 !== n) { const r0 = document.createRange(); r0.selectNodeContents(inList); r0.collapse(false); sl0.removeAllRanges(); sl0.addRange(r0); }
+      // ↩ on an empty last item ends the list, as in Notes and Keynote: the blank bullet goes away.
+      if (inList && EDIT.textEl.contains(inList) && !inList.textContent.trim() && !inList.nextElementSibling && inList.previousElementSibling) { e.preventDefault(); const list = inList.parentElement, box = list.parentElement; inList.remove();
+        // ↩ on the blank last bullet leaves the list: typing goes on below it, in the same box.
+        if (box && box !== currentSection() && box.tagName === 'DIV' && !isLocked(box)) { commitText(); select(box); startText(null, { after: list }); return; }
+        const prev = list.lastElementChild, r = document.createRange(); r.selectNodeContents(prev); r.collapse(false); const sl = getSelection(); sl.removeAllRanges(); sl.addRange(r); onTextInput(); emit('edit', { type: 'notice', message: 'List ended. Esc to finish.' }); return; }
+      if (!inList || !EDIT.textEl.contains(inList)) { e.preventDefault(); document.execCommand('insertLineBreak'); onTextInput(); return; }
+}
+    if (mod && k === 'b') { e.preventDefault(); flushText(); EDIT.nextLabel = 'bold'; document.execCommand('bold'); flushText(); EDIT.nextLabel = null; onCaretMove(); }
+    if (mod && k === 'i') { e.preventDefault(); flushText(); EDIT.nextLabel = 'italic'; document.execCommand('italic'); flushText(); EDIT.nextLabel = null; onCaretMove(); }
   }
+  // While typing, Bold/Italic in the panel show the words at the caret.
+  function onCaretMove() { clearTimeout(EDIT.caretTimer); EDIT.caretTimer = setTimeout(() => { if (!EDIT.textEl) return; const k = String(document.queryCommandState('bold')) + document.queryCommandState('italic'); if (k !== EDIT.caretState) { EDIT.caretState = k; emit('edit', { type: 'select', info: selInfo() }); } }, 120); }
   function onTextBlur() { if (EDIT.textEl && !EDIT.keepText) commitText(); }
-  function onTextInput() {
+  function onTextInput(e) {
+    // A new list item starts as plain words, not inside the previous item's trailing bold or code.
+    if (e?.inputType === 'insertParagraph') { const sel = getSelection(), a = sel.anchorNode, li = (a?.nodeType === 1 ? a : a?.parentElement)?.closest?.('li');
+      if (li && li.textContent === '' && EDIT.textEl?.contains(li)) { const host = li.children.length === 1 && li.firstElementChild.matches('span') ? li.firstElementChild : li; if (host.querySelector('*:not(br)')) { host.innerHTML = '<br>'; const r = document.createRange(); r.setStart(host, 0); r.collapse(true); sel.removeAllRanges(); sel.addRange(r); } } }
     refreshSel(); clearTimeout(EDIT.textTimer); EDIT.textTimer = setTimeout(flushText, 500);
   }
   function onTextPaste(e) {
@@ -1025,10 +1228,11 @@
   function flushText() {
     clearTimeout(EDIT.textTimer);
     const el = EDIT.textEl; if (!el) return;
-    const html = cleanHtml(el.innerHTML);
+    const html = cleanHtml(el.innerHTML, el);
     if (html !== EDIT.textSaved) {
       EDIT.textSaved = html;
-      emit('edit', { type: 'text', path: pathOf(el), html, info: selInfo(), transaction: EDIT.textTransaction });
+      emit('edit', { type: 'text', path: pathOf(el), html, info: selInfo(), transaction: EDIT.nextLabel ? undefined : EDIT.textTransaction, label: EDIT.nextLabel || undefined });
+      EDIT.nextLabel = null;
     }
   }
   function captureTextSelection() {
@@ -1044,9 +1248,41 @@
       const sel = getSelection(); sel.removeAllRanges(); sel.addRange(EDIT.range);
     }
   }
-  function cleanHtml(html) {
+  const LIST_FROM_P = new WeakSet(); // boxes made from a paragraph by a list button
+  const list0IsOnly = l => { const b = l.parentElement; return b && b !== currentSection() && b.tagName === 'DIV' && b.children.length === 1 && !b.textContent.replace(l.textContent, '').trim(); };
+  // True when every run of words in el renders with the property (bold applied as <b> inside counts).
+  // An object is locked when it, or a box around it, is locked.
+  const isLocked = n => !!n?.closest?.('[data-dek-locked]');
+  function runsAll(el, test) { if (!el || el.namespaceURI === SVG_NS) return false; const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT); let any = false; while (w.nextNode()) { const t = w.currentNode; if (!t.textContent.trim()) continue; any = true; if (!test(getComputedStyle(t.parentElement))) return false; } return any; }
+  // Hosts that may only hold phrasing content: a typed new line must stay a <br> inside them,
+  // never a <div> or <p> that breaks the file's markup.
+  const PHRASING_HOST = /^(P|H[1-6]|SPAN|A|B|STRONG|EM|I|U|S|SMALL|LABEL|FIGCAPTION|DT|BUTTON|TEXT|TSPAN)$/i;
+  function cleanHtml(html, host) {
     const t = document.createElement('div');
-    t.innerHTML = html;
+    t.innerHTML = html.replace(/\u200b/g, '');
+    if (host && PHRASING_HOST.test(host.tagName)) {
+      for (const b of [...t.querySelectorAll('div,p')].reverse()) {
+        const frag = document.createDocumentFragment();
+        if (b.previousSibling) frag.append(document.createElement('br'));
+        if (!(b.childNodes.length === 1 && b.firstChild.nodeName === 'BR')) frag.append(...b.childNodes);
+        b.replaceWith(frag);
+      }
+      while (t.lastChild && (t.lastChild.nodeName === 'BR' || (t.lastChild.nodeType === 3 && !t.lastChild.textContent.trim() && t.lastChild.previousSibling?.nodeName === 'BR'))) t.lastChild.remove();
+    }
+    // A line break only the caret needed: a trailing <br> in the text or a list item, and the
+    // non-breaking space the browser leaves before a typed break.
+    // Trailing breaks only the caret needed, at every depth of the last run (inside <b>, <li>, <span>).
+    for (const box of [t, ...t.querySelectorAll('li')]) for (let n = box; n?.nodeType === 1; n = n.lastChild?.nodeType === 1 && n.lastChild.nodeName !== 'BR' ? n.lastChild : null) while (n.lastChild?.nodeName === 'BR' && n.lastChild.previousSibling) n.lastChild.remove();
+    // A bare <span> (bold switched on then off) is a leftover wrapper.
+    // (The browser turns <b> into <span> keeping its id; spans the text had before editing stay.)
+    for (const sp of [...t.querySelectorAll('span')].reverse()) if ([...sp.attributes].every(x => x.name === 'data-dek-id') && !EDIT.keepSpans?.has(sp.dataset.dekId)) sp.replaceWith(...sp.childNodes);
+    // …including one left at the very end inside inline formatting (<b>…<br></b>).
+    for (let n = t.lastChild; n && n.nodeType === 1 && n.nodeName !== 'BR' && !/^(LI|UL|OL)$/.test(n.nodeName); n = n.lastChild) if (n.lastChild?.nodeName === 'BR' && n.lastChild.previousSibling) { n.lastChild.remove(); break; }
+    for (const br of t.querySelectorAll('br')) { const p = br.previousSibling, n = br.nextSibling; if (p?.nodeType === 3 && /\u00a0$/.test(p.textContent)) p.textContent = p.textContent.replace(/\u00a0+$/, ''); if (n?.nodeType === 3 && /^\u00a0/.test(n.textContent)) n.textContent = n.textContent.replace(/^\u00a0/, ''); }
+    // A trailing empty list item (↩ at the end, nothing typed) and a typed trailing space are caret leftovers.
+    for (const li of t.querySelectorAll('li')) if (li.parentElement.children.length > 1 && !li.textContent.trim() && !li.querySelector('img,svg')) li.remove();
+    { const w = document.createTreeWalker(t, NodeFilter.SHOW_TEXT); let last = null; while (w.nextNode()) if (w.currentNode.textContent.length) last = w.currentNode; if (last && /\u00a0$/.test(last.textContent) && !last.nextSibling) last.textContent = last.textContent.replace(/\u00a0+$/, ''); }
+    for (const li of t.querySelectorAll('li')) { const f = li.firstChild; if (f?.nodeType === 3 && /^\u00a0/.test(f.textContent)) f.textContent = f.textContent.replace(/^\u00a0/, ''); }
     for (const el of t.querySelectorAll('*')) {
       el.classList.remove('visible', 'current-fragment', 'dek-editing-text');
       if (!el.classList.length) el.removeAttribute('class');
@@ -1058,8 +1294,9 @@
   function endTextMode() {
     const el = EDIT.textEl;
     if (!el) return null;
+    document.removeEventListener('selectionchange', onCaretMove);
     el.removeAttribute('contenteditable');
-    el.classList.remove('dek-editing-text');
+    el.classList.remove('dek-editing-text'); if (!el.classList.length) el.removeAttribute('class');
     el.removeAttribute('spellcheck');
     clearTimeout(EDIT.textTimer);
     el.removeEventListener('input', onTextInput);
@@ -1067,14 +1304,18 @@
     el.removeEventListener('keydown', onTextKey);
     el.removeEventListener('blur', onTextBlur);
     EDIT.textEl = null;
+    if (EDIT.field) { const f = EDIT.field; EDIT.field = null; el.style.opacity = EDIT.svgOpacity || ''; if (!el.getAttribute('style')) el.removeAttribute('style'); f.remove(); }
     return el;
   }
   function commitText() {
+    // An emptied SVG text would leave an invisible object; keep the original words instead.
+    if (EDIT.field && EDIT.textEl && !EDIT.textEl.textContent.trim()) { cancelText(); emit('edit',{type:'notice',message:'Text can’t be empty; kept the original'}); return; }
     flushText();
     const el = endTextMode();
     if (!el) return;
-    const html = cleanHtml(el.innerHTML);
-    if (html !== EDIT.textSaved) emit('edit', { type: 'text', path: pathOf(el), html, info: selInfo() });
+    const html = cleanHtml(el.innerHTML, el);
+    if (el.namespaceURI !== SVG_NS && el.innerHTML !== html) el.innerHTML = html; // the canvas shows exactly what the file holds
+    if (html !== EDIT.textSaved) emit('edit', { type: 'text', path: pathOf(el), html, info: selInfo(), transaction: EDIT.nextLabel ? undefined : EDIT.textTransaction });
     else emit('edit', { type: 'select', info: selInfo() });
     refreshSel();
   }
@@ -1082,16 +1323,17 @@
     const el = endTextMode();
     if (!el) return;
     el.innerHTML = EDIT.textBackup;
-    const html = cleanHtml(el.innerHTML);
-    if (html !== EDIT.textSaved) emit('edit', { type: 'text', path: pathOf(el), html, info: selInfo() });
+    const html = cleanHtml(el.innerHTML, el);
+    // Same transaction as the typing it cancels, so the host folds it away instead of adding an undo step.
+    if (html !== EDIT.textSaved) emit('edit', { type: 'text', path: pathOf(el), html, info: selInfo(), transaction: EDIT.textTransaction });
     refreshSel();
     emit('edit', { type: 'select', info: selInfo() });
   }
 
-  function emitStyles(updates,label) {
+  function emitStyles(updates,label,transaction) {
     if(!updates.length)return;
-    if(updates.length===1)emit('edit',{type:'style',path:pathOf(updates[0].el),style:updates[0].style,info:selInfo()});
-    else emit('edit',{type:'batch',operations:updates.map(it=>({type:'style',target:pathOf(it.el),style:it.style})),label});
+    if(updates.length===1)emit('edit',{type:'style',path:pathOf(updates[0].el),style:updates[0].style,info:selInfo(),label,transaction});
+    else emit('edit',{type:'batch',operations:updates.map(it=>({type:'style',target:pathOf(it.el),style:it.style})),label,transaction});
   }
   function groupGeometry(el) {
     if(!el.matches('.dek-group'))return [];
@@ -1130,38 +1372,70 @@
       }
     },
     enabled() { return EDIT.on; },
-    select(path, additive=false) { select(path ? unitFor(elAt(path)) : null,additive); return selInfo(); },
-    selectMany(paths) { select(null); const units=[...new Set(paths.map(p=>unitFor(elAt(p))).filter(Boolean))];units.forEach(el=>select(el,true)); return selInfo(); },
+    select(path, additive=false) { const el=path ? normalizeUnit(elAt(path)) : null; if(el && !additive)scopeTo(el); select(el,additive); return selInfo(); },
+    selectMany(paths) { select(null); const units=[...new Set(paths.map(p=>normalizeUnit(elAt(p))).filter(Boolean))];if(units[0])scopeTo(units[0]);units.forEach(el=>select(el,true)); return selInfo(); },
+    // Esc walks out one level; Enter walks into the selected block.
+    selectParent() {
+      const sec=currentSection(), el=EDIT.sel;
+      if(EDIT.textEl)commitText();
+      if(!el || el.parentElement===sec || !el.parentElement){EDIT.scope=null;select(null);return false;}
+      let parent=el.parentElement; while(isWrapper(parent) && parent.parentElement!==sec) parent=parent.parentElement;
+      if(isWrapper(parent)){EDIT.scope=null;select(null);return false;}
+      scopeTo(parent); select(parent); return true;
+    },
+    // Tab / ⇧Tab: the next object at the same level, in reading order.
+    cycle(dir) {
+      const sec=currentSection(), el=EDIT.sel;
+      const parent=el ? el.parentElement : sec, root=parent && sec.contains(parent) ? parent : sec;
+      const list=Array.from(root.children).filter(n=>!n.matches('aside.notes,.notes,.dek-sel,.dek-hover,.dek-text-field,script,style,template,br') && (n.textContent.trim() || n.children.length || n.matches(ATOMIC_SEL))).map(n=>normalizeUnit(n)).filter(Boolean);
+      if(!list.length)return false;
+      const i=el?list.indexOf(el):-1, next=list[(i+(dir<0?-1:1)+list.length)%list.length];
+      if(EDIT.textEl)commitText();
+      scopeTo(next); select(next); return true;
+    },
+    enter() {
+      const el=EDIT.sel; if(!el)return false;
+      if(kindOf(el)==='text'){startText(null);return true;}
+      const child=Array.from(el.children).find(n=>!n.matches('script,style,template,.dek-sel,.dek-hover,aside.notes'));
+      const inner=child && (normalizeUnit(child)===el ? child : normalizeUnit(child));
+      if(!inner || inner===el)return false;
+      EDIT.scope=el; select(inner); return true;
+    },
     snapping() { return EDIT.snap; }, snap(on) { EDIT.snap=!!on; },
     selected: selInfo,
     clear() { select(null); },
     refresh: refreshSel,
     nudge(dx, dy) {
-      const updates=EDIT.multi.filter(el=>!el.hasAttribute('data-dek-locked')).map(el=>{const [x,y]=parseTranslate(el);setTranslate(el,x+dx,y+dy);return{el,style:{translate:el.style.translate || null}};});
-      refreshSel(); emitStyles(updates,'move elements');
+      // Repeated arrow nudges are one move: one undo step.
+      // …of the same objects: picking another object starts a new step.
+      const now=Date.now(), who=EDIT.multi.map(pathOf).join('|'); if(!EDIT.nudgeTx || now-EDIT.nudgeAt>900 || EDIT.nudgeWho!==who) EDIT.nudgeTx='nudge-'+crypto.randomUUID(); EDIT.nudgeAt=now; EDIT.nudgeWho=who;
+      const updates=EDIT.multi.filter(el=>!isLocked(el)).map(el=>{const [x,y]=parseTranslate(el);setTranslate(el,x+dx,y+dy);return{el,style:{translate:el.style.translate || null}};});
+      refreshSel(); emitStyles(updates,'move elements',EDIT.nudgeTx);
     },
-    setStyle(style) {
+    setStyle(style, label) {
       const children=[];
-      const updates=EDIT.multi.filter(el=>!el.hasAttribute('data-dek-locked')).map(el=>{if(el.matches('.dek-group')&&(style.width || style.height))children.push(...scaleGroup(groupGeometry(el),style.width?parseFloat(style.width)/el.offsetWidth:1,style.height?parseFloat(style.height)/el.offsetHeight:1));for(const[k,v]of Object.entries(style)) {if(v===null || v==='')el.style.removeProperty(k);else el.style.setProperty(k,v);}return{el,style};});
+      const updates=EDIT.multi.filter(el=>!isLocked(el)).map(el=>{if(el.matches('.dek-group')&&(style.width || style.height))children.push(...scaleGroup(groupGeometry(el),style.width?parseFloat(style.width)/el.offsetWidth:1,style.height?parseFloat(style.height)/el.offsetHeight:1));for(const[k,v]of Object.entries(style)) {if(v===null || v==='')el.style.removeProperty(k);else el.style.setProperty(k,v);}return{el,style};});
       updates.push(...children);
-      refreshSel();emitStyles(updates,'style elements');
+      refreshSel();emitStyles(updates,label || 'style elements');
     },
     setAttrs(attrs) {
       const el = EDIT.sel;
-      if (!el || el.hasAttribute('data-dek-locked')) return;
+      if (!el || isLocked(el)) return;
       for (const k in attrs) { if (attrs[k] === null) el.removeAttribute(k); else el.setAttribute(k, attrs[k]); }
       refreshSel();
       emit('edit', { type: 'attrs', path: pathOf(el), attrs, info: selInfo() });
     },
     deleteSelected() {
       if(EDIT.textEl)commitText();
-      const paths=EDIT.multi.filter(el=>!el.hasAttribute('data-dek-locked')).map(pathOf);
-      if(paths.length)emit('edit',{type:'batch',operations:[{type:'delete',targets:paths}],label:'delete elements'});
-      select(null);
+      const keep=EDIT.multi.filter(el=>isLocked(el)), gone=EDIT.multi.filter(el=>!isLocked(el));
+      // Locked objects stay, and stay selected; the count tells the shell what really happened.
+      if(gone.length)emit('edit',{type:'batch',operations:[{type:'delete',targets:gone.map(pathOf)}],label:gone.length>1?`delete · ${gone.length} objects`:`delete · ${labelFor(gone[0])}`});
+      select(null); keep.forEach(el=>select(el,true));
+      return gone.length;
     },
     retag(tag) {
       const el = EDIT.sel;
-      if(el?.hasAttribute('data-dek-locked'))return;
+      if(isLocked(el))return;
       if (!el || el.tagName.toLowerCase() === tag) return;
       if (EDIT.textEl === el) commitText();
       const path = pathOf(el);
@@ -1177,7 +1451,9 @@
     commitText,
     cancelText,
     captureTextSelection,
-    textStyle(style) {
+    // Back from the panel: the caret returns to where it was in the words.
+    resumeText() { if (!EDIT.textEl) return; EDIT.keepText = false; if (EDIT.field) { EDIT.field.focus(); return; } restoreTextSelection(); },
+    textStyle(style, label) {
       restoreTextSelection();
       const sel = getSelection();
       if (EDIT.textEl && sel.rangeCount && !sel.isCollapsed && EDIT.textEl.contains(sel.anchorNode) && EDIT.textEl.contains(sel.focusNode)) {
@@ -1185,15 +1461,74 @@
         for (const [k,v] of Object.entries(style)) span.style.setProperty(k, v);
         span.appendChild(range.extractContents()); range.insertNode(span);
         range.selectNodeContents(span); sel.removeAllRanges(); sel.addRange(range); EDIT.range = range.cloneRange();
+        if (label) EDIT.nextLabel = label;
         flushText(); refreshSel();
-      } else editApi.setStyle(style);
+      } else editApi.setStyle(style, label);
     },
     format(cmd) {
-      if (!EDIT.sel || kindOf(EDIT.sel) !== 'text') return;
+      if (!EDIT.sel || (kindOf(EDIT.sel) !== 'text' && !/^(UL|OL)$/.test(EDIT.sel.tagName)) || EDIT.sel.namespaceURI === SVG_NS) return;
+      // A paragraph can't hold a list: it becomes a text block holding one, line by line. A heading stays a heading.
+      if (/^insert(Unordered|Ordered)List$/.test(cmd) && /^H[1-6]$/.test(EDIT.sel.tagName)) { emit('edit',{type:'notice',message:'A heading can’t hold a list. Change its Role to Text first.'}); return; }
+      // The other list button on a list switches its kind (bullets ↔ numbers).
+      if (/^insert(Unordered|Ordered)List$/.test(cmd) && /^(UL|OL)$/.test(EDIT.sel.tagName) && !EDIT.textEl && EDIT.sel.tagName !== (cmd === 'insertOrderedList' ? 'OL' : 'UL')) {
+        const list = EDIT.sel, path = pathOf(list), tag = cmd === 'insertOrderedList' ? 'ol' : 'ul', n = document.createElement(tag);
+        for (const at of list.attributes) n.setAttribute(at.name, at.value); n.append(...list.childNodes); list.replaceWith(n); select(n);
+        emit('edit', { type: 'batch', live: true, operations: [{ type: 'retag', target: path, tag }], label: tag === 'ol' ? 'numbered list' : 'bulleted list', info: selInfo() }); return;
+      }
+      // The same list button on a list turns it back into lines of text.
+      if (/^insert(Unordered|Ordered)List$/.test(cmd) && /^(UL|OL)$/.test(EDIT.sel.tagName) && !EDIT.textEl && EDIT.sel.tagName === (cmd === 'insertOrderedList' ? 'OL' : 'UL')) {
+        // A list that is its box's only content gives its lines back to that box.
+        if (list0IsOnly(EDIT.sel)) { const list = EDIT.sel, box = list.parentElement, path = pathOf(box), html = [...list.children].map(li => li.innerHTML.trim()).filter(Boolean).join('<br>');
+          // A paragraph that was just turned into a list becomes that paragraph again.
+          if (LIST_FROM_P.has(box)) { const n = document.createElement('p'); for (const at of box.attributes) n.setAttribute(at.name, at.value); n.innerHTML = html; box.replaceWith(n); select(n); emit('edit', { type: 'batch', live: true, operations: [{ type: 'text', target: path, html }, { type: 'retag', target: path, tag: 'p' }], label: 'remove list', info: selInfo(), selIds: n.dataset.dekId ? [n.dataset.dekId] : undefined }); return; }
+          box.innerHTML = html; select(box); emit('edit', { type: 'batch', live: true, operations: [{ type: 'text', target: path, html }], label: 'remove list', info: selInfo() }); return; }
+        const list = EDIT.sel, path = pathOf(list), was = list.dataset.dekId;
+        const html = [...list.children].map(li => li.innerHTML.trim()).filter(Boolean).join('<br>');
+        const n = document.createElement('div'); for (const at of list.attributes) n.setAttribute(at.name, at.value); n.innerHTML = html; list.replaceWith(n); select(n);
+        emit('edit', { type: 'batch', live: true, operations: [{ type: 'retag', target: path, tag: 'div' }, { type: 'text', target: path, html }], label: 'remove list', info: selInfo(), selIds: was ? [was] : undefined });
+        return;
+      }
+      if (/^insert(Unordered|Ordered)List$/.test(cmd) && EDIT.sel.tagName === 'P') {
+        commitText();
+        const old = EDIT.sel, path = pathOf(old), tag = cmd === 'insertOrderedList' ? 'ol' : 'ul';
+        const lines = old.innerHTML.split(/<br\s*\/?>/i).map(l => l.trim()).filter(Boolean);
+        const html = `<${tag}>${(lines.length ? lines : ['']).map(l => `<li>${l}</li>`).join('')}</${tag}>`;
+        const n = document.createElement('div'); for (const at of old.attributes) n.setAttribute(at.name, at.value); n.innerHTML = html; old.replaceWith(n); LIST_FROM_P.add(n); select(n.firstElementChild || n);
+        emit('edit', { type: 'batch', live: true, operations: [{ type: 'retag', target: path, tag: 'div' }, { type: 'text', target: path, html }], label: tag === 'ol' ? 'numbered list' : 'bulleted list', info: selInfo(), selIds: old.dataset.dekId ? [old.dataset.dekId] : undefined });
+        return;
+      }
+      // Bold or italic on the whole object (not typing): a style on it, so nested <em>/<b> survive.
+      if (!EDIT.textEl && (cmd === 'bold' || cmd === 'italic')) {
+        const el = EDIT.sel, bold = cmd === 'bold', prop = bold ? 'font-weight' : 'font-style', test = cs => bold ? +cs.fontWeight >= 700 : cs.fontStyle === 'italic';
+        // The object's own setting decides when it has one; otherwise how its words look.
+        const own = el.style.getPropertyValue(prop), ownOn = own ? (bold ? +own >= 700 || own === 'bold' : own === 'italic') : null;
+        const isOn = ownOn ?? runsAll(el, test);
+        el.style.removeProperty(prop);
+        const inherited = runsAll(el, test);
+        if (isOn) { if (inherited) el.style.setProperty(prop, bold ? '400' : 'normal'); }
+        else if (!inherited) el.style.setProperty(prop, bold ? '700' : 'italic');
+        refreshSel(); emitStyles([{ el, style: { [prop]: el.style.getPropertyValue(prop) || null } }], bold ? 'bold' : 'italic'); return;
+      }
       if (!EDIT.textEl) startText(null, { selectAll: true });
+      flushText(); // the typing before it stays its own undo step
       restoreTextSelection();
+      EDIT.nextLabel = { bold:'bold', italic:'italic', underline:'underline', strikeThrough:'strikethrough', insertUnorderedList:'bulleted list', insertOrderedList:'numbered list' }[cmd] || null;
       document.execCommand(cmd); captureTextSelection(); flushText(); refreshSel();
       emit('edit', { type: 'select', info: selInfo() });
+    },
+    // Copies go right after their originals, in the same container, so they keep its styling.
+    // Only objects placed freely on the slide are offset, so the copy is visibly separate.
+    duplicateOps() {
+      commitText();
+      // Some parts exist once per parent; a second caption or table head would be invalid HTML.
+      if(EDIT.multi.some(el=>el.matches('figcaption,caption,legend,summary,thead,tfoot'))){ emit('edit',{type:'notice',message:'A caption or table header can’t be duplicated; duplicate the figure or table instead'}); return []; }
+      return EDIT.multi.map(el=>{
+        const clone=el.cloneNode(true);
+        for(const n of [clone,...clone.querySelectorAll('[data-dek-id],[data-dek-selected]')]) { n.removeAttribute('data-dek-id');n.removeAttribute('data-dek-selected'); }
+        clone.classList.remove('visible','current-fragment','dek-editing-text');
+        if(['absolute','fixed'].includes(getComputedStyle(el).position) || el.style.translate){const[x,y]=parseTranslate(el);setTranslate(clone,x+32,y+32);}
+        return {type:'insert',target:pathOf(el),position:'after',html:clone.outerHTML};
+      });
     },
     duplicate() {
       commitText();
@@ -1204,36 +1539,37 @@
         const[x,y]=parseTranslate(el);setTranslate(clone,x+32,y+32);return clone.outerHTML;
       }).join('');
     },
-    lock(locked) { emit('edit',{type:'batch',operations:[{type:'lock',targets:EDIT.multi.map(pathOf),locked}],label:locked?'lock elements':'unlock elements'}); },
+    lock(locked) { const els=[...new Set(EDIT.multi.map(n=>locked ? n : (n.closest('[data-dek-locked]') || n)))], targets=els.map(pathOf); els.forEach(n=>n.toggleAttribute('data-dek-locked',!!locked)); /* unlocking inside a locked box unlocks that box */ refreshSel(); emit('edit',{type:'batch',live:true,operations:[{type:'lock',targets,locked}],label:locked?'lock':'unlock',info:selInfo()}); }, // applied live: no reload, no flash
     group() {
       commitText(); const list=EDIT.multi;
       if(list.length<2)return;
       if(list.some(n=>n.parentElement!==list[0].parentElement)) { emit('edit',{type:'notice',message:'Choose objects in the same container to group them.'});return; }
       const positions=list.map(n=>layoutRect(n,n.parentElement)), box={x:Math.min(...positions.map(r=>r.x)),y:Math.min(...positions.map(r=>r.y))};
       box.w=Math.max(...positions.map(r=>r.x+r.w))-box.x;box.h=Math.max(...positions.map(r=>r.y+r.h))-box.y;
-      emit('edit',{type:'batch',operations:[{type:'group',targets:list.map(pathOf),box,positions}],label:'group elements'});
+      emit('edit',{type:'batch',operations:[{type:'group',targets:list.map(pathOf),box,positions}],label:'group'});
     },
     ungroup() {
       const el=EDIT.sel;if(!el?.matches('.dek-group'))return;
       const rotation=parseFloat(getComputedStyle(el).rotate)||0;
-      emit('edit',{type:'batch',operations:[{type:'ungroup',target:pathOf(el),positions:Array.from(el.children).map(n=>({...layoutRect(n,el.parentElement),rotate:(parseFloat(getComputedStyle(n).rotate)||0)+rotation}))}],label:'ungroup elements'});
+      emit('edit',{type:'batch',operations:[{type:'ungroup',target:pathOf(el),positions:Array.from(el.children).map(n=>({...layoutRect(n,el.parentElement),rotate:(parseFloat(getComputedStyle(n).rotate)||0)+rotation}))}],label:'ungroup'});
     },
     align(edge) {
-      const list=EDIT.multi.filter(n=>!n.hasAttribute('data-dek-locked'));if(!list.length)return;
+      const list=EDIT.multi.filter(n=>!isLocked(n));if(!list.length)return;
       const rs=list.map(slideRect), ref=list.length===1?{x:0,y:0,w:S.w,h:S.h}:{x:Math.min(...rs.map(r=>r.x)),y:Math.min(...rs.map(r=>r.y))};
       if(list.length>1){ref.w=Math.max(...rs.map(r=>r.x+r.w))-ref.x;ref.h=Math.max(...rs.map(r=>r.y+r.h))-ref.y;}
       const updates=list.map((el,i)=>{const r=rs[i],[x,y]=parseTranslate(el);const dx=edge==='left'?ref.x-r.x:edge==='right'?ref.x+ref.w-r.x-r.w:edge==='center'?ref.x+(ref.w-r.w)/2-r.x:0;const dy=edge==='top'?ref.y-r.y:edge==='bottom'?ref.y+ref.h-r.y-r.h:edge==='middle'?ref.y+(ref.h-r.h)/2-r.y:0;setTranslate(el,x+dx,y+dy);return{el,style:{translate:el.style.translate || null}};});
-      emitStyles(updates,'align elements');refreshSel();
+      emitStyles(updates,'align '+({left:'left edges',right:'right edges',center:'centers',top:'top edges',bottom:'bottom edges',middle:'middles'}[edge]||edge));refreshSel();
     },
     distribute(axis) {
-      const list=EDIT.multi.filter(n=>!n.hasAttribute('data-dek-locked')).map(el=>({el,r:slideRect(el)})).sort((a,b)=>a.r[axis]-b.r[axis]);if(list.length<3)return;
+      const list=EDIT.multi.filter(n=>!isLocked(n)).map(el=>({el,r:slideRect(el)})).sort((a,b)=>a.r[axis]-b.r[axis]);if(list.length<3)return;
       const size=axis==='x'?'w':'h',first=list[0].r,last=list[list.length-1].r;
       const gap=(last[axis]+last[size]-first[axis]-list.reduce((n,it)=>n+it.r[size],0))/(list.length-1);
-      let cursor=first[axis];const updates=list.map(it=>{const[x,y]=parseTranslate(it.el),delta=cursor-it.r[axis];setTranslate(it.el,x+(axis==='x'?delta:0),y+(axis==='y'?delta:0));cursor+=it.r[size]+gap;return{el:it.el,style:{translate:it.el.style.translate || null}};});emitStyles(updates,'distribute elements');refreshSel();
+      let cursor=first[axis];const updates=list.map(it=>{const[x,y]=parseTranslate(it.el),delta=cursor-it.r[axis];setTranslate(it.el,x+(axis==='x'?delta:0),y+(axis==='y'?delta:0));cursor+=it.r[size]+gap;return{el:it.el,style:{translate:it.el.style.translate || null}};});emitStyles(updates,'distribute');refreshSel();
     },
     link(url) {
-      if(!EDIT.textEl)startText(null,{selectAll:true});restoreTextSelection();
-      document.execCommand(url?'createLink':'unlink',false,url);captureTextSelection();flushText();
+      const started=!EDIT.textEl; if(started)startText(null,{selectAll:true});restoreTextSelection();
+      flushText(); EDIT.nextLabel=url?'link':'remove link'; document.execCommand(url?'createLink':'unlink',false,url);captureTextSelection();flushText();
+      if(started) commitText(); // a link set from the panel doesn't leave the words in editing
     },
     arrange(direction) {
       const el = EDIT.sel; if (!el) return;
@@ -1251,10 +1587,23 @@
       const r = slideRect(el);
       editApi.nudge(axis==='x' ? (S.w-r.w)/2-r.x : 0,axis==='y' ? (S.h-r.h)/2-r.y : 0);
     },
+    // The slide as a tree: top-level objects, and inside blocks, figures,
+    // tables and groups the pieces a double-click reaches. Front-most first.
     layers() {
       const sec=currentSection(); if (!sec) return [];
-      const nodes=Array.from(sec.querySelectorAll('*')).map(unitFor).filter(Boolean);
-      return Array.from(new Set(nodes)).filter(el=>!el.closest('.notes,.dek-sel,.dek-hover,script,style')).map(el=>({path:pathOf(el),kind:kindOf(el),locked:el.hasAttribute('data-dek-locked'),id:el.dataset.dekId || null,label:(el.getAttribute('alt') || el.textContent?.trim() || labelFor(el)).slice(0,60)})).reverse();
+      const out=[];
+      const walk=(root,depth)=>{
+        const units=Array.from(root.children).filter(n=>!n.matches('aside.notes,.notes,.dek-sel,.dek-hover,.dek-text-field,script,style,template,br') && (n.textContent.trim() || n.children.length || n.matches(ATOMIC_SEL) || n.getBoundingClientRect().width>0)).map(n=>normalizeUnit(n)===n?n:normalizeUnit(n)).filter(Boolean);
+        for(const el of [...new Set(units)]){
+          if(el.matches('tbody,thead,tfoot')){walk(el,depth);continue;}
+          const kind=kindOf(el),label=labelFor(el),role=roleOf(el);
+          const deeper=depth<4 && !['text','chart','shape','3d'].includes(kind) && !el.matches('img,video,canvas,iframe') && el.children.length>0 && (kind!=='image' || !!el.textContent.trim());
+          out.push({path:pathOf(el),kind,role,locked:el.hasAttribute('data-dek-locked'),id:el.dataset.dekId || null,label,depth,parent:depth>0,branch:deeper,tag:el.tagName.toLowerCase()});
+          if(deeper)walk(el,depth+1);
+        }
+      };
+      walk(sec,0);
+      return out;
     },
     insert(html) {
       const sec = currentSection();

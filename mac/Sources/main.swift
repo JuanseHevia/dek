@@ -349,7 +349,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         editMenu.addItem(.separator())
         editMenu.addItem(item("New Slide After Current", "newSlide", "n", [.command, .shift]))
         editMenu.addItem(item("Duplicate Slide", "duplicate", "d"))
-        editMenu.addItem(item("Delete Slide", "delete", "\u{8}"))
+        editMenu.addItem(item("Delete", "delete", "\u{8}")) // the slide, or in Edit the selected object
         editMenu.addItem(item("Move Slide Up", "moveUp", String(UnicodeScalar(NSUpArrowFunctionKey)!), [.command, .option]))
         editMenu.addItem(item("Move Slide Down", "moveDown", String(UnicodeScalar(NSDownArrowFunctionKey)!), [.command, .option]))
         editMenu.addItem(item("Copy Slide HTML", "copyHtml", "c", [.command, .option]))

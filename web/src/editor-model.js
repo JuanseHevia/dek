@@ -27,6 +27,7 @@ export function ensureObjectIds(raw) {
     const sec=sectionElement(s.html);let changed=false;
     for(const el of sec.querySelectorAll('*')) {
       if(el.closest('aside.notes,script,style,template'))continue;
+      if(el.tagName==='BR' || el.tagName==='WBR'){ if(el.dataset.dekId){ delete el.dataset.dekId; changed=true; } continue; } // line breaks are not objects
       const id=el.dataset.dekId;
       if(!id || seen.has(id)){el.dataset.dekId=uid();changed=true;}
       seen.add(el.dataset.dekId);
@@ -80,7 +81,7 @@ export function elementOperations(html, operations) {
     if(targets.some(n=>n.closest('[data-dek-locked]')) && op.type!=='lock') throw new Error('Unlock the element before editing it');
     for(const el of targets) if(el!==sec && !el.dataset.dekId) el.dataset.dekId=uid();
     const el=targets[0];
-    if(op.type==='style') for(const n of targets) for(const [k,v] of Object.entries(op.style)) { if(v===null || v==='') n.style.removeProperty(k); else n.style.setProperty(k,String(v)); }
+    if(op.type==='style') for(const n of targets) for(const [k,v] of Object.entries(op.style)) setStyleText(n,k,v===null || v==='' ? null : String(v));
     else if(op.type==='attrs') for(const n of targets) for(const [k,v] of Object.entries(op.attrs)) { if(v===null) n.removeAttribute(k); else n.setAttribute(k,String(v)); }
     else if(op.type==='text') el.innerHTML=op.html;
     else if(op.type==='delete') targets.forEach(n=>n.remove());
@@ -115,10 +116,12 @@ export function elementOperations(html, operations) {
       if(!op.positions || op.positions.length!==el.children.length) throw new Error('Group geometry is required');
       Array.from(el.children).forEach((n,i)=>{ const r=op.positions[i]; n.style.cssText += `;position:absolute;left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px;margin:0;translate:none;${r.rotate===undefined?'':`rotate:${r.rotate}deg;`}`; el.before(n); }); el.remove();
     } else if(op.type==='retag') {
-      if(!/^(h[1-6]|p|blockquote|div)$/.test(op.tag)) throw new Error('Unsupported text type');
+      if(!/^(h[1-6]|p|blockquote|div|ul|ol)$/.test(op.tag)) throw new Error('Unsupported text type');
       const n=document.createElement(op.tag); for(const a of el.attributes)n.setAttribute(a.name,a.value); n.innerHTML=el.innerHTML; el.replaceWith(n);
     } else if(!['style','attrs','text','delete','lock','insert','group','ungroup','retag'].includes(op.type)) throw new Error(`Unknown edit: ${op.type}`);
   }
+  // Clearing the last override leaves no empty style attribute behind in the file.
+  for(const n of [sec,...sec.querySelectorAll('[style]')]) if(n.getAttribute('style')?.trim()==='') n.removeAttribute('style');
   return sec.outerHTML;
 }
 export function documentMeta(model) {
@@ -153,4 +156,24 @@ export function slideOperations(model, indices, action, options={}) {
   } else throw new Error('Unknown slide action');
   if(action==='section' && options.id){const remaining=m.slides.filter(s=>!selected.includes(s.index)),last=remaining.findLastIndex(s=>s.section===options.id);if(last>=0)return slideOperations(m,selected,'move',{to:last+1});}
   return m.raw;
+}
+
+// Writes one declaration into the style attribute as typed, so "#D9B65A" stays hex in the file
+// (CSSOM would rewrite it as rgb()). Splits on ; outside quotes and parentheses.
+function styleDecls(text){
+  const out=[]; let cur='', depth=0, q='';
+  for(const ch of text||''){
+    if(q){ cur+=ch; if(ch===q) q=''; continue; }
+    if(ch==='"'||ch==="'"){ q=ch; cur+=ch; continue; }
+    if(ch==='(') depth++; else if(ch===')') depth=Math.max(0,depth-1);
+    if(ch===';' && !depth){ if(cur.trim()) out.push(cur.trim()); cur=''; continue; }
+    cur+=ch;
+  }
+  if(cur.trim()) out.push(cur.trim());
+  return out;
+}
+function setStyleText(n,k,v){
+  const name=k.toLowerCase(), decls=styleDecls(n.getAttribute('style')).filter(d=>d.slice(0,d.indexOf(':')).trim().toLowerCase()!==name);
+  if(v!==null) decls.push(`${k}: ${v}`);
+  if(decls.length) n.setAttribute('style',decls.join('; ')+';'); else n.removeAttribute('style');
 }
